@@ -50,13 +50,17 @@ volume, connect or stop the service. Use it on a trusted home network only.
 
 | Path | Contents |
 |---|---|
-| `dist/Bluetooth-Audio-2.7.5.pkg` | Prebuilt home-screen app (bundles the same payload as `payload/`) |
-| `payload/BTA-Audio-2.7.5.bin` | Prebuilt flat payload for GoldHEN (sha256 `7db52b8462f28ec3070924ece0507e4d360ba97986c94427f4657124acb337b3`) |
 | `app/` | Payload source: launcher, worker (A2DP bridge and web UI), device cache |
-| `native/` | Home-screen app source (OpenOrbis) and asset generator |
+| `native/` | Home-screen app source (OpenOrbis), asset generator and PC preview harness |
 | `probe/bt_accept_patch.c` | In-RAM Bluetooth acceptance patch |
-| `variants/src/` | Alternative worker builds kept for A/B testing |
 | `tools/` | Install and deploy scripts |
+| `Makefile`, `docker/`, `scripts/` | Linux build, pinned Docker build image, helper scripts |
+| `VERSION` | Release version used for file names and the PKG's `param.sfo` |
+
+Prebuilt files are not kept in the repository. Download `Bluetooth-Audio-<version>.pkg`,
+`BTA-Audio-<version>.bin` and `SHA256SUMS` from the
+[Releases page](https://github.com/sse-97/ps4-bt-audio/releases), or build them yourself (see
+below). Every push also uploads them as a build artifact on the Actions tab.
 
 ## Install
 
@@ -65,7 +69,7 @@ enabled (port 2121) so you can copy files. Use either option below, or both.
 
 ### Option A: home-screen app (PKG)
 
-`dist/Bluetooth-Audio-2.7.5.pkg` installs a **Bluetooth Audio** app (title ID `BTAD00001`) on the
+`Bluetooth-Audio-2.7.5.pkg` from the Releases page installs a **Bluetooth Audio** app (title ID `BTAD00001`) on the
 home screen. It bundles the audio payload: when you open the app and the service isn't
 running, it sends the payload to GoldHEN's BinLoader (port 9090) for you. For the service to
 also start after every jailbreak without opening the app, add the AutoRun entry from Option B.
@@ -90,13 +94,13 @@ to port 9090**: the loader treats any connection as a payload and stops listenin
 reboot and re-jailbreak.
 
 ```powershell
-python tools/deploy_variant.py payload/BTA-Audio-2.7.5.bin --host <PS4_IP> --connect
+python tools/deploy_variant.py BTA-Audio-2.7.5.bin --host <PS4_IP> --connect
 ```
 
 To start it automatically after each jailbreak, install it as a GoldHEN AutoRun payload:
 
 ```powershell
-python tools/install_bta.py --host <PS4_IP> --payload payload/BTA-Audio-2.7.5.bin
+python tools/install_bta.py --host <PS4_IP> --payload BTA-Audio-2.7.5.bin
 python tools/install_bta.py --host <PS4_IP> --disable-autorun   # undo
 ```
 
@@ -126,20 +130,44 @@ Bluetooth Devices** (Options, Forget Device), then put them in pairing mode and 
 
 ## Build from source
 
-Windows, PowerShell. The scripts look for a folder named `toolchain` **beside** this repo
-folder (that is, `..\toolchain` relative to the repo root): LLVM in `toolchain/llvm/bin`, and
-[OpenOrbis](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain) in
-`toolchain/OpenOrbis/PS4Toolchain`. The home-screen app also needs Python with Pillow and
-matplotlib (its bundled DejaVu fonts are used for the UI text) and a .NET runtime for PkgTool.
+The reference build runs on Linux in Docker, the same way GitHub Actions builds every push.
+With Docker installed (on Windows, from WSL):
 
-```powershell
-mkdir dist
-powershell -ExecutionPolicy Bypass -File build_app.ps1      # build/BTA-Audio.bin (run first)
-powershell -ExecutionPolicy Bypass -File build_native.ps1   # dist/Bluetooth-Audio-2.7.5.pkg
-powershell -ExecutionPolicy Bypass -File build_variant.ps1 -Worker variants/src/worker_2.5_nokeepalive.c -Out out/test.bin
+```sh
+scripts/docker-build.sh            # build/dist: BTA-Audio-<version>.bin, Bluetooth-Audio-<version>.pkg, SHA256SUMS
+scripts/docker-build.sh payload    # only build/BTA-Audio.bin
 ```
 
-`build_native.ps1` bundles `build/BTA-Audio.bin`, so run `build_app.ps1` first.
+The image (`docker/Dockerfile`) pins Ubuntu 24.04 with clang/lld 18.1.3, the
+[OpenOrbis toolchain](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain), the .NET runtime
+for PkgTool, and exact Python package versions for the asset generator. With that compiler the
+2.7.5 payload rebuilds byte for byte (sha256 `7db52b84…b337b3`).
+
+Without Docker, run `make` directly. The payload needs only `clang` and `ld.lld`; the PKG also
+needs `OO_PS4_TOOLCHAIN` pointing at the OpenOrbis `PS4Toolchain` folder, Python with Pillow and
+matplotlib, and a .NET runtime:
+
+```sh
+make payload      # build/BTA-Audio.bin
+make pkg          # build/Bluetooth-Audio-<version>.pkg
+make dist         # both, renamed, plus SHA256SUMS in build/dist
+make host-ui      # build/host_ui: renders a UI scene file to a PPM on the PC
+```
+
+### Releasing
+
+Bump `VERSION` together with the version strings in `app/web.html`, `app/worker.c` and
+`native/main.c` (CI fails if they disagree), then push a tag such as `v2.7.6`. CI builds it and
+creates a draft GitHub Release with the PKG, the payload and `SHA256SUMS`.
+
+### Windows (legacy)
+
+`build_app.ps1` and `build_native.ps1` still work with a `toolchain` folder beside the repo
+(`..\toolchain\llvm\bin` and `..\toolchain\OpenOrbis\PS4Toolchain`) and write to `build/`.
+The Docker build is the reference; use it for releases.
+
+The worker variants that used to live in `variants/src/` are in the git history at commit
+`628163a`.
 
 ## Credits and licenses
 

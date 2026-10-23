@@ -7,6 +7,10 @@ $link = Join-Path $workspace 'toolchain/llvm/bin/ld.lld.exe'
 $bin = Join-Path $sdk 'bin/windows'
 $out = Join-Path $root 'build/native'
 $pkg = Join-Path $out 'package'
+$version = (Get-Content -Raw (Join-Path $root 'VERSION')).Trim()
+$parts = $version.Split('.')
+$sfoVersion = '{0:D2}.{1}{2}' -f [int]$parts[0], $parts[1], $parts[2]
+$pkgName = "Bluetooth-Audio-$version.pkg"
 $env:DOTNET_ROLL_FORWARD = 'Major'
 $env:OO_PS4_TOOLCHAIN = $sdk
 python (Join-Path $root 'native/make_assets.py')
@@ -29,12 +33,12 @@ $tool = Join-Path $bin 'PkgTool.Core.exe'
 & $tool sfo_new $sfo
 if ($LASTEXITCODE) { throw 'SFO create failed' }
 $entries = @(
-    @('APP_TYPE','Integer','4','1'), @('APP_VER','Utf8','8','02.75'),
+    @('APP_TYPE','Integer','4','1'), @('APP_VER','Utf8','8',$sfoVersion),
     @('ATTRIBUTE','Integer','4','0'), @('CATEGORY','Utf8','4','gd'),
     @('CONTENT_ID','Utf8','48','IV0000-BTAD00001_00-BTAUDIO000000001'),
     @('DOWNLOAD_DATA_SIZE','Integer','4','0'), @('SYSTEM_VER','Integer','4','0'),
     @('TITLE','Utf8','128','Bluetooth Audio'), @('TITLE_ID','Utf8','12','BTAD00001'),
-    @('VERSION','Utf8','8','02.75')
+    @('VERSION','Utf8','8',$sfoVersion)
 )
 foreach ($entry in $entries) {
     & $tool sfo_setentry $sfo $entry[0] --type $entry[1] --maxsize $entry[2] --value $entry[3]
@@ -47,7 +51,7 @@ try {
     & $tool pkg_build package.gp4 $out
     if ($LASTEXITCODE) { throw 'PKG build failed' }
 } finally { Pop-Location }
-Copy-Item -LiteralPath (Join-Path $out 'IV0000-BTAD00001_00-BTAUDIO000000001.pkg') -Destination (Join-Path $root 'dist/Bluetooth-Audio-2.7.5.pkg') -Force
-& $tool pkg_validate (Join-Path $root 'dist/Bluetooth-Audio-2.7.5.pkg')
+Copy-Item -LiteralPath (Join-Path $out 'IV0000-BTAD00001_00-BTAUDIO000000001.pkg') -Destination (Join-Path $root "build/$pkgName") -Force
+& $tool pkg_validate (Join-Path $root "build/$pkgName")
 if ($LASTEXITCODE) { throw 'PKG validation failed' }
-Write-Output 'Built and validated Bluetooth-Audio-2.7.5.pkg'
+Write-Output "Built and validated build/$pkgName"
