@@ -11,16 +11,6 @@ permissions:
   contents: read
 
 jobs:
-  toolchain-info:
-    runs-on: ubuntu-24.04
-    steps:
-      - name: List OpenOrbis toolchain releases
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: >
-          gh api repos/OpenOrbis/OpenOrbis-PS4-Toolchain/releases
-          --jq '.[] | .tag_name + " " + .published_at + " " + ([.assets[] | .name + "=" + .browser_download_url] | join(" "))'
-
   build:
     runs-on: ubuntu-24.04
     steps:
