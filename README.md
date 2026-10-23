@@ -139,13 +139,13 @@ scripts/docker-build.sh payload    # only build/BTA-Audio.bin
 ```
 
 The image (`docker/Dockerfile`) pins Ubuntu 24.04 with clang/lld 18.1.3, the
-[OpenOrbis toolchain](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain), the .NET runtime
+[OpenOrbis toolchain](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain) (v0.5.4), OpenSSL 1.1
 for PkgTool, and exact Python package versions for the asset generator. With that compiler the
 2.7.5 payload rebuilds byte for byte (sha256 `7db52b84…b337b3`).
 
 Without Docker, run `make` directly. The payload needs only `clang` and `ld.lld`; the PKG also
-needs `OO_PS4_TOOLCHAIN` pointing at the OpenOrbis `PS4Toolchain` folder, Python with Pillow and
-matplotlib, and a .NET runtime:
+needs `OO_PS4_TOOLCHAIN` pointing at the OpenOrbis toolchain folder, Python with Pillow and
+matplotlib, and OpenSSL 1.1 (`libssl1.1`, needed by the runtime bundled with PkgTool):
 
 ```sh
 make payload      # build/BTA-Audio.bin

@@ -12,10 +12,18 @@ RUN apt-get update \
       ca-certificates curl make git \
       clang-18 lld-18 \
       python3 python3-pip \
-      dotnet-runtime-8.0 \
  && rm -rf /var/lib/apt/lists/* \
  && ln -s /usr/bin/clang-18 /usr/local/bin/clang \
  && ln -s /usr/bin/ld.lld-18 /usr/local/bin/ld.lld
+
+# PkgTool.Core ships its own (old) .NET runtime, which needs OpenSSL 1.1.
+# Ubuntu 24.04 only has OpenSSL 3, so take the 20.04 release package
+# (checksum from the focal Packages index).
+ARG LIBSSL_DEB=libssl1.1_1.1.1f-1ubuntu2_amd64.deb
+ARG LIBSSL_SHA256=09ee28588a1fb5613ddc6c26a992d5a76931b3cf22c022930da413a5e580599e
+RUN curl -fsSL "http://archive.ubuntu.com/ubuntu/pool/main/o/openssl/$LIBSSL_DEB" -o /tmp/libssl.deb \
+ && echo "$LIBSSL_SHA256  /tmp/libssl.deb" | sha256sum -c - \
+ && dpkg -i /tmp/libssl.deb && rm /tmp/libssl.deb
 
 # make_assets.py bakes the UI fonts from the DejaVu copy bundled with matplotlib.
 COPY requirements.txt /tmp/requirements.txt
@@ -35,9 +43,8 @@ RUN curl -fsSL "$OO_URL" -o /tmp/oo.tar.gz \
  && ls /opt/OpenOrbis/bin/linux \
  && find /opt/oo \( -name right.sprx -o -name libc.prx -o -name libSceFios2.prx -o -name 'create-*' -o -name 'PkgTool*' \) -print
 
+# PkgTool's runtime does not know Ubuntu 24.04's ICU; it needs no locale data.
 ENV OO_PS4_TOOLCHAIN=/opt/OpenOrbis \
-    DOTNET_ROLL_FORWARD=Major \
-    DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 \
-    DOTNET_CLI_TELEMETRY_OPTOUT=1
+    DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
 
 WORKDIR /src

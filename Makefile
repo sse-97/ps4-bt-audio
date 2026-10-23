@@ -2,7 +2,7 @@
 #
 #   make payload     build/BTA-Audio.bin (needs clang and ld.lld only)
 #   make pkg         build/Bluetooth-Audio-<version>.pkg (needs OO_PS4_TOOLCHAIN,
-#                    Python with Pillow and matplotlib, and a .NET runtime)
+#                    Python with Pillow and matplotlib, and libssl1.1 for PkgTool)
 #   make dist        both, renamed for release, plus SHA256SUMS in build/dist
 #   make host-ui     build/host_ui, renders a UI scene to a PPM on the PC
 #
@@ -66,7 +66,8 @@ $(PAYLOAD): $(PAYLOAD_OBJS) app/payload.ld $(OBJ)/BTA-Audio.debug.elf
 
 OO_BIN = $(OO_PS4_TOOLCHAIN)/bin/linux
 PKGTOOL ?= $(OO_BIN)/PkgTool.Core
-export DOTNET_ROLL_FORWARD := Major
+# PkgTool's bundled .NET runtime fails without matching ICU; it needs no locale data.
+export DOTNET_SYSTEM_GLOBALIZATION_INVARIANT := 1
 
 define need_toolchain
 	@test -n "$(OO_PS4_TOOLCHAIN)" && test -d "$(OO_PS4_TOOLCHAIN)/include" || \
