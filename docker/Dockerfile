@@ -32,16 +32,14 @@ RUN pip3 install --no-cache-dir --break-system-packages -r /tmp/requirements.txt
 # OpenOrbis PS4 toolchain (headers, libs, create-fself, create-gp4, PkgTool).
 ARG OO_VERSION=v0.5.4
 ARG OO_URL=https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/download/${OO_VERSION}/toolchain-llvm-18.tar.gz
-ARG OO_SHA256=
+ARG OO_SHA256=3c7cd5bb593ca74fa1c13fd59f3938dc0fc07985167f7275063019e63abe4526
 RUN curl -fsSL "$OO_URL" -o /tmp/oo.tar.gz \
- && if [ -n "$OO_SHA256" ]; then echo "$OO_SHA256  /tmp/oo.tar.gz" | sha256sum -c -; fi \
- && sha256sum /tmp/oo.tar.gz | tee /opt/openorbis.sha256 \
+ && echo "$OO_SHA256  /tmp/oo.tar.gz" | sha256sum -c - \
  && mkdir -p /opt/oo && tar -xzf /tmp/oo.tar.gz -C /opt/oo && rm /tmp/oo.tar.gz \
  && root="$(dirname "$(find /opt/oo -name link.x -print -quit)")" \
  && test -f "$root/link.x" && ln -s "$root" /opt/OpenOrbis \
  && chmod +x /opt/OpenOrbis/bin/linux/* \
- && ls /opt/OpenOrbis/bin/linux \
- && find /opt/oo \( -name right.sprx -o -name libc.prx -o -name libSceFios2.prx -o -name 'create-*' -o -name 'PkgTool*' \) -print
+ && ls /opt/OpenOrbis/bin/linux
 
 # PkgTool's runtime does not know Ubuntu 24.04's ICU; it needs no locale data.
 ENV OO_PS4_TOOLCHAIN=/opt/OpenOrbis \
