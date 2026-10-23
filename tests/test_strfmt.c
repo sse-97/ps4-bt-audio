@@ -1,0 +1,42 @@
+#include "test.h"
+#include "strfmt.h"
+#include <string.h>
+
+void test_strfmt(void) {
+    char buf[128];
+
+    /* compose: prefix + name + suffix, NUL-terminated, returns length. */
+    { u64 n = compose(buf, sizeof buf, "Connecting to ", "JBL Go", "...");
+      CHECK(!strcmp(buf, "Connecting to JBL Go..."));
+      CHECK_EQ(n, (long)strlen("Connecting to JBL Go...")); }
+
+    /* compose clips the device name to 40 bytes. */
+    { char name[64]; memset(name, 'A', sizeof name); name[63] = 0;
+      compose(buf, sizeof buf, "<", name, ">");
+      CHECK_EQ(strlen(buf), 1 + 40 + 1); }
+
+    /* compose respects the output capacity and still NUL-terminates. */
+    { char small[8]; u64 n = compose(small, sizeof small, "abcdef", "ghij", "kl");
+      CHECK(n <= 7);
+      CHECK(small[n] == 0);
+      CHECK(small[7] == 0 || n < 7); }
+
+    /* mac_text: 48-bit address to 12 uppercase hex digits. */
+    { char mac[13]; mac_text(0x0011223344AAUL, mac); CHECK(!strcmp(mac, "0011223344AA")); }
+
+    /* parse_mac: valid, lowercase, bad hex, and the mandatory " HTTP/1." tail. */
+    CHECK_EQ((long)parse_mac("0011223344AA HTTP/1.1"), (long)0x0011223344AAUL);
+    CHECK_EQ((long)parse_mac("aabbccddeeff HTTP/1.0"), (long)0xAABBCCDDEEFFUL);
+    CHECK_EQ((long)parse_mac("00112233445Z HTTP/1.1"), 0);     /* bad hex digit */
+    CHECK_EQ((long)parse_mac("0011223344AA GET /"), 0);        /* missing HTTP tail */
+    CHECK_EQ((long)parse_mac("0011223344AA"), 0);              /* truncated */
+
+    /* joint_path: the per-device opt-out flag file path. */
+    { char p[40]; joint_path(0x0011223344AAUL, p);
+      CHECK(!strcmp(p, "/data/bta_audio/dual-0011223344AA")); }
+
+    /* bta_prefix. */
+    CHECK(bta_prefix("hello world", "hello"));
+    CHECK(!bta_prefix("hello", "hello world"));
+    CHECK(bta_prefix("abc", ""));
+}

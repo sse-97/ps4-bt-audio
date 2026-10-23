@@ -19,6 +19,9 @@ jobs:
       - name: Check version strings
         run: scripts/check-version.sh
 
+      - name: Host unit tests
+        run: make test
+
       - uses: docker/setup-buildx-action@v3
 
       - name: Build toolchain image

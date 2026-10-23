@@ -5,6 +5,7 @@
 #                    Python with Pillow and matplotlib, and libssl1.1 for PkgTool)
 #   make dist        both, renamed for release, plus SHA256SUMS in build/dist
 #   make host-ui     build/host_ui, renders a UI scene to a PPM on the PC
+#   make test        build and run the host unit tests (needs only a native cc)
 #
 # The Docker image in docker/ has everything; scripts/docker-build.sh runs this
 # Makefile inside it. Same flags and object order as the old build_app.ps1.
@@ -33,12 +34,12 @@ PAYLOAD_FLAGS := --target=x86_64-pc-freebsd12-elf -O2 -fPIE -ffreestanding -fno-
 	-Wall -Wextra -Werror -I $(OBJ)
 APP_HEADERS := $(wildcard app/*.h)
 
-.PHONY: all payload pkg dist clean host-ui
+.PHONY: all payload pkg dist clean host-ui test
 all: payload pkg
 payload: $(PAYLOAD)
 pkg: $(PKG)
 
-$(OBJ) $(NATIVE) $(DIST):
+$(OBJ) $(NATIVE) $(DIST) $(BUILD):
 	mkdir -p $@
 
 $(OBJ)/web_page.h: app/web.html scripts/embed.py | $(OBJ)
@@ -50,7 +51,7 @@ $(OBJ)/launcher.o $(OBJ)/worker.o: $(OBJ)/%.o: app/%.c $(APP_HEADERS) $(OBJ)/web
 $(OBJ)/bt_devices.o: app/bt_devices.c $(APP_HEADERS) | $(OBJ)
 	$(CLANG) $(PAYLOAD_FLAGS) -mgeneral-regs-only -c $< -o $@
 
-$(OBJ)/bt_accept_patch.o: probe/bt_accept_patch.c | $(OBJ)
+$(OBJ)/bt_accept_patch.o: probe/bt_accept_patch.c $(APP_HEADERS) | $(OBJ)
 	$(CLANG) $(PAYLOAD_FLAGS) -mgeneral-regs-only -D_start=bta_apply_patch -c $< -o $@
 
 # Link order matters: launcher first, its entry sits at offset 0.
@@ -131,3 +132,18 @@ HOST_CC ?= $(CLANG)
 host-ui: $(BUILD)/host_ui
 $(BUILD)/host_ui: native/host_ui.c native/ui.h $(NATIVE)/ui_font.h $(NATIVE)/ui_icons.h
 	$(HOST_CC) -O2 -Wall -Wno-format-truncation -I $(NATIVE) $< -o $@
+
+# --- Host unit tests ------------------------------------------------------------
+# Pure C that runs natively on the PC (no PS4 toolchain, no libm). The dsp and
+# strfmt suites check the extracted modules against copies of the pre-refactor
+# logic over randomised inputs. TEST_CC is a native compiler; in CI this runs on
+# the runner, not inside the FreeBSD-targeted build image.
+TEST_CC   ?= cc
+TEST_SRC  := $(wildcard tests/*.c)
+TEST_HDRS := $(wildcard tests/*.h)
+test: $(BUILD)/tests
+	$(BUILD)/tests
+$(BUILD)/tests: $(TEST_SRC) $(TEST_HDRS) $(APP_HEADERS) | $(BUILD)
+	@# -Wno-unused-function: a test file may include a module header (e.g. json.h
+	@# via timing.h) without exercising every helper in it; that is not a defect.
+	$(TEST_CC) -O2 -Wall -Wextra -Werror -Wno-unused-function -I app -I tests $(TEST_SRC) -o $@

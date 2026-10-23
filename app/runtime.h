@@ -1,9 +1,6 @@
 #ifndef BTA_RUNTIME_H
 #define BTA_RUNTIME_H
-typedef unsigned long u64;
-typedef unsigned int u32;
-typedef unsigned short u16;
-typedef unsigned char u8;
+#include "bta_types.h"
 __attribute__((noinline)) static long sc3(long n,long a,long b,long c){long o;__asm__ volatile("syscall; jnc 1f; neg %%rax; 1:":"=a"(o),"+d"(c),"+D"(a),"+S"(b):"a"(n):"rcx","r8","r9","r10","r11","cc","memory");return o;}
 __attribute__((noinline)) static long sc5(long n,long a,long b,long c,long d,long e){
  register long r10 __asm__("r10")=d;register long r8 __asm__("r8")=e;long o;
