@@ -27,7 +27,7 @@ ARG OO_URL=https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/downloa
 ARG OO_SHA256=
 RUN curl -fsSL "$OO_URL" -o /tmp/oo.tar.gz \
  && if [ -n "$OO_SHA256" ]; then echo "$OO_SHA256  /tmp/oo.tar.gz" | sha256sum -c -; fi \
- && sha256sum /tmp/oo.tar.gz \
+ && sha256sum /tmp/oo.tar.gz | tee /opt/openorbis.sha256 \
  && mkdir -p /opt/oo && tar -xzf /tmp/oo.tar.gz -C /opt/oo && rm /tmp/oo.tar.gz \
  && root="$(dirname "$(find /opt/oo -name link.x -print -quit)")" \
  && test -f "$root/link.x" && ln -s "$root" /opt/OpenOrbis \
@@ -37,6 +37,7 @@ RUN curl -fsSL "$OO_URL" -o /tmp/oo.tar.gz \
 
 ENV OO_PS4_TOOLCHAIN=/opt/OpenOrbis \
     DOTNET_ROLL_FORWARD=Major \
+    DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 \
     DOTNET_CLI_TELEMETRY_OPTOUT=1
 
 WORKDIR /src

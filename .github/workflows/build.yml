@@ -41,6 +41,11 @@ jobs:
           build/host_ui build/scene.txt build/scene.ppm
           test -s build/scene.ppm
 
+      - name: Show checksums
+        run: |
+          docker run --rm ps4-bt-audio-build cat /opt/openorbis.sha256
+          cat build/dist/SHA256SUMS
+
       - uses: actions/upload-artifact@v4
         with:
           name: ps4-bt-audio-${{ github.sha }}
