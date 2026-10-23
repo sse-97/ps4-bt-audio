@@ -3,3 +3,7 @@ install_backups/
 out/
 __pycache__/
 *.pyc
+# Release binaries are published on GitHub Releases, not committed.
+dist/
+payload/
+*.pkg
