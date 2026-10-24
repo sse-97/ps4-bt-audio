@@ -21,8 +21,10 @@
 #include "auth.h"
 #include "strfmt.h"
 #include "dsp.h"
-#include "core.h"
+#include "conn.h"
+#include "profiles.h"
 #include "timing.h"
+#include "pacing.h"
 int bta_apply_patch(void);
 
 /* FreeBSD syscall numbers used directly through sc3/sc5. */
@@ -70,7 +72,8 @@ struct app {
     long listener, bt, hdmi, shmfd;
     u8 *ring;
     u32 readpos;
-    int wanted, streaming, tv, muted, quit, phase;
+    int wanted, streaming, tv, muted, quit;
+    enum conn_state state;
     long patch_rc, packet_rc, connect_rc, last_rc, hdmi_rc, btstate;
     u64 next_try, deadline, scan_at, heartbeat, poll_at, net_at, packets, errors, resyncs;
     unsigned level;
@@ -80,25 +83,37 @@ struct app {
     struct bta_second secs[128], cur;
     u32 sec_seq;
     u64 sec_start, last_send;
-    int joint;
+    int mode;            /* current SBC send mode: SBC_JOINT / SBC_DUAL */
+    u8 modes_tried;      /* modes attempted this stream (for one-shot fallback) */
+    int confirmed;       /* a packet was accepted this stream (record the mode once) */
+    /* Clock-paced sending (see pacing.h). latency_mode picks the backlog target;
+     * drops/underruns count trims and starved slots for the diagnostics. */
+    struct bta_pace pace;
+    int latency_mode;
+    u64 drops, underruns;
     u64 refused_since;
     u32 relinks, relinks_total;
     u64 stream_at, test_until, test_next;
     u32 test_phase;
+    int snap; /* on the next capture read, drop to the live write cursor */
     void *mutex;
     int (*mlock)(void **);
     int (*munlock)(void **);
     volatile int sender_run, sender_alive;
     int sender_prio;
     long thread_rc, prio_rc, aff_rc, pi_rc;
-    /* Truthful link state (see core.h / link_state). dropped: the link was lost
-     * while streaming. failed: the last attempt failed. announced: a
-     * "disconnected" notice was shown. session: this connection was announced. */
-    int dropped, failed, announced, session, meter;
-    u32 attempts;
+    /* Truthful link state (see conn.h / link_state). dropped: the link was lost
+     * while streaming. give_up: the backoff schedule ran out, so we wait for the
+     * user. announced: a "disconnected" notice was shown. session: this
+     * connection was announced. */
+    int dropped, give_up, announced, session, meter;
+    u32 attempts;        /* consecutive failed attempts (drives the backoff) */
     u64 ok_at, meter_at, notify_at[3];
     unsigned meter_peak;
     struct bt_device target;
+    struct bta_profiles profiles;
+    int profile_dirty;   /* profiles changed in memory, persist on the next beat */
+    u64 last_tick;       /* worker-loop time, for rest-mode resume detection */
     struct bt_devices devices;
     int scanning, pin_pending;
     u64 scan_end, list_at;
@@ -191,32 +206,53 @@ static void mute(struct app *a, int on) {
     put("/data/bt_hdmi_mute_status.bin", result, sizeof(result));
 }
 static void stop_audio(struct app *a) {
-    if (a->phase == 4 && a->bt >= 0) { sc3(SYS_ioctl, a->bt, BT_SCAN_STOP, 0); a->scanning = 0; }
+    if (a->state == CONN_DISCOVERING && a->bt >= 0) { sc3(SYS_ioctl, a->bt, BT_SCAN_STOP, 0); a->scanning = 0; }
     if (a->streaming) {
         short silence[384];
         memset(silence, 0, sizeof(silence));
         struct audio_req q = {a->target.address, silence, sizeof(silence), 0, 0};
         sc3(SYS_ioctl, a->bt, BT_SEND_AUDIO, (long)&q);
     }
-    a->streaming = 0; a->phase = 0; a->level = 0; a->meter = 0; a->meter_peak = 0;
+    a->streaming = 0; a->level = 0; a->meter = 0; a->meter_peak = 0;
     a->pin_pending = 0; a->test_until = 0; mute(a, 0);
     if (a->ring) { a->unmap(a->ring, 0x10000); a->ring = 0; }
     closefd(a->shmfd); a->shmfd = -1;
 }
-/* A failed attempt: stop, explain, and try again after delay_us. */
-static void retry_after(struct app *a, const char *s, u64 delay_us) {
-    stop_audio(a); message(a, s); a->failed = 1; a->next_try = a->clock() + delay_us;
+/* Schedule the next automatic attempt from the backoff schedule (2, 4, 8, 16 s),
+ * or give up and wait for the user once it is exhausted. Driven by a->attempts,
+ * the count of consecutive failures. */
+static void schedule_backoff(struct app *a) {
+    u32 n = a->attempts ? a->attempts : 1;
+    if (conn_give_up(n)) {
+        a->give_up = 1;
+        bta_profile_record_fail(&a->profiles, a->target.address);
+        a->profile_dirty = 1;
+        return;
+    }
+    a->next_try = a->clock() + conn_backoff_us(n);
 }
-static void retry(struct app *a, const char *s) { retry_after(a, s, 10000000); }
-static void retry_named(struct app *a, const char *pre, const char *suf, u64 delay_us) {
+/* A failed attempt: stop, explain, and back off before trying again. */
+static void fail(struct app *a, const char *s) {
+    stop_audio(a); message(a, s); a->dropped = 0; a->state = CONN_RECOVERING;
+    schedule_backoff(a);
+}
+static void fail_named(struct app *a, const char *pre, const char *suf) {
     char m[128];
     compose(m, sizeof(m), pre, target_name(a), suf);
-    retry_after(a, m, delay_us);
+    fail(a, m);
 }
 /* The PS4 audio stream was rebuilt (e.g. a game started). The headphone link is
  * fine, so this is a quiet reconnect of the audio path, not a failure or a drop. */
 static void restart_audio(struct app *a, const char *s) {
-    stop_audio(a); message(a, s); a->next_try = a->clock() + 2000000;
+    stop_audio(a); message(a, s); a->dropped = 0; a->give_up = 0;
+    a->state = CONN_RECOVERING; a->next_try = a->clock() + 2000000;
+}
+/* The Bluetooth link is up but the PS4 audio ring is not ready yet (e.g. right
+ * after boot). Keep trying promptly; this is not a connection failure, so it
+ * never counts toward the backoff or the give-up. */
+static void audio_wait(struct app *a, const char *s) {
+    stop_audio(a); message(a, s); a->dropped = 0; a->give_up = 0; a->attempts = 0;
+    a->state = CONN_RECOVERING; a->next_try = a->clock() + 3000000;
 }
 /* Drop the Bluetooth link itself, not just the audio. The driver keeps per-link
  * stream state (e.g. a stuck format renegotiation) that survives an audio stop. */
@@ -226,19 +262,21 @@ static void drop_link(struct app *a) {
         sc3(SYS_ioctl, a->bt, BT_DROP_LINK, (long)&address);
     }
 }
-/* Automatic recovery: the PS4 refused every packet for REFUSED_US. Do what a
- * user would by hand: drop the link and reconnect. At most 3 times in a row;
- * any accepted packet resets the count. */
+/* Last-resort recovery once the automatic format fallback has not helped: drop
+ * the link and reconnect from scratch, restarting the backoff. Any accepted
+ * packet resets the relink count. */
 static void relink(struct app *a) {
     a->relinks++; a->relinks_total++; stop_audio(a); drop_link(a);
-    a->phase = 0; a->next_try = a->clock() + 3000000; a->refused_since = 0;
+    a->state = CONN_RECOVERING; a->dropped = 1; a->give_up = 0; a->attempts = 0;
+    a->next_try = a->clock() + 2000000; a->refused_since = 0;
     say(a, "The PS4 stopped accepting audio for ", ". Reconnecting...");
 }
 /* The headphones went away mid-stream, detected only by consecutive audio-send
  * failures (never by polling the driver while streaming: that starved the
  * controller). stop_audio restores TV sound. */
 static void link_lost(struct app *a) {
-    stop_audio(a); a->dropped = 1; a->failed = 0; a->next_try = a->clock() + 2000000;
+    stop_audio(a); a->dropped = 1; a->give_up = 0; a->attempts = 0;
+    a->state = CONN_RECOVERING; a->next_try = a->clock() + 2000000;
     say(a, "", " disconnected. TV sound is back. Reconnecting...");
     if (may_announce(a, 1)) {
         notify("Bluetooth headphones disconnected. TV sound is back on. Reconnecting...");
@@ -276,24 +314,56 @@ static int scan(struct app *a) {
     return 0;
 }
 struct saved_device { u64 magic; struct bt_device device; };
-static int save_target(struct app *a, const struct bt_device *d) {
-    struct saved_device s = {.magic = 0x3254454752415442UL, .device = *d};
-    if (put("/data/bta_audio/device.tmp", &s, sizeof(s))) return -1;
-    if (sc3(SYS_rename, (long)"/data/bta_audio/device.tmp", (long)"/data/bta_audio/device.bin", 0) < 0) return -1;
-    a->target = *d;
+static int put_profiles(const struct bta_profiles *p) {
+    if (put("/data/bta_audio/profiles.tmp", p, sizeof(*p))) return -1;
+    if (sc3(SYS_rename, (long)"/data/bta_audio/profiles.tmp", (long)"/data/bta_audio/profiles.bin", 0) < 0) return -1;
     return 0;
 }
-static void load_target(struct app *a) {
-    a->target.address = 0; a->target.services = 0;
-    long fd = sc3(SYS_open, (long)"/data/bta_audio/device.bin", 0, 0);
+static int save_profiles(struct app *a) { return put_profiles(&a->profiles); }
+/* Load the remembered devices, migrating the pre-refactor device.bin plus the
+ * dual-<address> flag into one profile the first time it is seen. */
+static void load_profiles(struct app *a) {
+    bta_profiles_init(&a->profiles);
+    long fd = sc3(SYS_open, (long)"/data/bta_audio/profiles.bin", 0, 0);
+    if (fd >= 0) {
+        struct bta_profiles p;
+        long n = sc3(SYS_read, fd, (long)&p, sizeof(p));
+        closefd(fd);
+        if (n == (long)sizeof(p) && bta_profiles_valid(&p, sizeof(p))) { a->profiles = p; return; }
+    }
+    fd = sc3(SYS_open, (long)"/data/bta_audio/device.bin", 0, 0);
     if (fd < 0) return;
     struct saved_device s;
     long n = sc3(SYS_read, fd, (long)&s, sizeof(s));
     closefd(fd);
-    if (n == sizeof(s) && s.magic == 0x3254454752415442UL && s.device.address && !(s.device.address >> 48)) {
+    if (n == (long)sizeof(s) && s.magic == 0x3254454752415442UL && s.device.address && !(s.device.address >> 48)) {
         s.device.name[95] = 0;
-        a->target = s.device;
+        int i = bta_profile_touch(&a->profiles, &s.device);
+        char p[40];
+        joint_path(s.device.address, p);
+        a->profiles.items[i].mode = exists(p) ? SBC_DUAL : SBC_JOINT;
+        a->profiles.items[i].last_ok_us = 1; /* previously used: prefer it on startup */
+        save_profiles(a);
     }
+}
+/* Remember the user's selection and persist the table. */
+static int select_device(struct app *a, const struct bt_device *d) {
+    bta_profile_touch(&a->profiles, d);
+    if (save_profiles(a)) return -1;
+    a->target = *d;
+    a->mode = bta_profile_mode(&a->profiles, d->address);
+    return 0;
+}
+/* Make the most-recently-used remembered device the initial target so a
+ * returning user auto-reconnects; begin_connect re-picks by what is in range. */
+static void init_target(struct app *a) {
+    int best = -1;
+    for (unsigned i = 0; i < a->profiles.count; i++)
+        if (best < 0 || a->profiles.items[i].last_ok_us > a->profiles.items[best].last_ok_us) best = (int)i;
+    if (best < 0) return;
+    bta_profile_device(&a->profiles.items[best], &a->target);
+    a->mode = a->profiles.items[best].mode;
+    a->wanted = 1;
 }
 static int save_volume(struct app *a, int volume) {
     if (volume < 0 || volume > 100) return -1;
@@ -312,23 +382,64 @@ static void load_volume(struct app *a) {
     closefd(fd);
     if (n == sizeof(value) && value <= 100) a->volume = (int)value;
 }
+/* Latency mode (BTA_LAT_*): the backlog the sender holds. Persisted so it
+ * survives a restart, like the volume. Default balanced (12 ms). */
+static void apply_latency(struct app *a, int mode) {
+    if (mode < BTA_LAT_LOW || mode > BTA_LAT_STABLE) mode = BTA_LAT_BALANCED;
+    u32 old_target = a->pace.target;
+    a->latency_mode = mode;
+    bta_pace_config(&a->pace, mode);
+    /* A deeper target needs a deeper cushion; the steady pacer only trims down,
+     * so re-enter prebuffering to grow it. Lowering the mode trims on the next
+     * send and needs no refill. */
+    if (a->pace.target > old_target) a->pace.filling = 1;
+}
+static int save_latency(struct app *a, int mode) {
+    if (mode < BTA_LAT_LOW || mode > BTA_LAT_STABLE) return -1;
+    unsigned value = (unsigned)mode;
+    if (put("/data/bta_audio/latency.tmp", &value, sizeof(value))) return -1;
+    if (sc3(SYS_rename, (long)"/data/bta_audio/latency.tmp", (long)"/data/bta_audio/latency.bin", 0) < 0) return -1;
+    apply_latency(a, mode);
+    return 0;
+}
+static void load_latency(struct app *a) {
+    unsigned value = BTA_LAT_BALANCED;
+    long fd = sc3(SYS_open, (long)"/data/bta_audio/latency.bin", 0, 0);
+    if (fd >= 0) {
+        long n = sc3(SYS_read, fd, (long)&value, sizeof(value));
+        closefd(fd);
+        if (n != sizeof(value)) value = BTA_LAT_BALANCED;
+    }
+    apply_latency(a, (int)value);
+}
 static void begin_connect(struct app *a) {
     a->patch_rc = bta_apply_patch();
-    if (a->patch_rc) { retry(a, "Bluetooth setup failed. Check the diagnostic status."); return; }
-    if (ensure_bt(a)) { retry(a, "Bluetooth is not ready. Retrying shortly."); return; }
+    if (a->patch_rc) { fail(a, "Bluetooth setup failed. Check the diagnostic status."); return; }
+    if (ensure_bt(a)) { fail(a, "Bluetooth is not ready. Retrying shortly."); return; }
     refresh_devices(a);
+    /* Connect to whichever remembered device is in range: keep the current
+     * target if it is present, otherwise pick the best remembered one that is. */
+    if (!a->target.address || !device(a, a->target.address)) {
+        struct bt_device *p = device(a, bta_profile_pick(&a->profiles, &a->devices));
+        if (p) a->target = *p;
+    }
     struct bt_device *t = device(a, a->target.address);
     if (!t) {
-        if (scan(a)) { retry(a, "Bluetooth scan could not start. Retrying shortly."); return; }
-        a->phase = 4; a->deadline = a->clock() + 16000000;
+        if (scan(a)) { fail(a, "Bluetooth scan could not start. Retrying shortly."); return; }
+        a->state = CONN_DISCOVERING; a->deadline = a->clock() + 16000000;
         say(a, "Looking for ", "... Put it in pairing mode if needed.");
         return;
     }
-    if (!bt_is_audio(t)) { a->wanted = 0; retry(a, "This device does not advertise headphone audio support."); return; }
+    if (!bt_is_audio(t)) {
+        a->wanted = 0; stop_audio(a); a->state = CONN_IDLE;
+        message(a, "This device does not advertise headphone audio support.");
+        return;
+    }
     end_scan(a);
+    a->mode = bta_profile_mode(&a->profiles, a->target.address);
     u64 address = a->target.address;
     a->btstate = sc3(SYS_ioctl, a->bt, BT_LINK_STATE, (long)&address);
-    a->phase = 1; a->deadline = a->clock() + 30000000;
+    a->state = CONN_CONNECTING; a->deadline = a->clock() + 30000000;
     say(a, "Connecting to ", "...");
     if (a->btstate < 5 || a->btstate > 6) {
         sc3(SYS_ioctl, a->bt, BT_SCAN_STOP, 0);
@@ -336,26 +447,30 @@ static void begin_connect(struct app *a) {
         /* An immediate driver error (e.g. 0x802F0204) means this device will not
          * connect right now; fail fast instead of waiting out the 30 s window. */
         if (a->connect_rc < 0) {
-            retry_named(a, "Couldn't connect to ", ". Make sure it's on, nearby and not connected to another device.", 8000000);
+            fail_named(a, "Couldn't connect to ", ". Make sure it's on, nearby and not connected to another device.");
             return;
         }
     } else a->connect_rc = 0;
 }
 static void start_audio(struct app *a) {
     a->shmfd = a->shm("/shm_acap.full", 0, 0);
-    if (a->shmfd < 0) { retry(a, "Waiting for the PS4 audio service."); return; }
+    if (a->shmfd < 0) { audio_wait(a, "Waiting for the PS4 audio service."); return; }
     void *p = a->map(0, 0x10000, 1, 1, a->shmfd, 0);
-    if (!p || p == (void *)-1) { retry(a, "Unable to open the game audio stream."); return; }
+    if (!p || p == (void *)-1) { audio_wait(a, "Unable to open the game audio stream."); return; }
     a->ring = p;
     a->readpos = *(volatile u32 *)(a->ring + 12);
     if (*(volatile u32 *)a->ring != 0x10000 || a->readpos < 16 || a->readpos >= 0x10000 || (a->readpos & 7)) {
-        retry(a, "The PS4 audio stream has an unexpected format.");
+        audio_wait(a, "The PS4 audio stream has an unexpected format.");
         return;
     }
-    a->streaming = 1; a->phase = 3; a->refused_since = 0; a->errors = 0;
-    a->stream_at = a->clock(); a->test_until = 0; a->test_next = 0; a->test_phase = 0;
+    a->streaming = 1; a->state = CONN_STREAMING; a->refused_since = 0; a->errors = 0;
+    a->stream_at = a->clock(); a->test_until = 0; a->test_next = 0; a->test_phase = 0; a->snap = 0;
+    bta_pace_reset(&a->pace, a->stream_at); a->drops = 0; a->underruns = 0;
     int was_dropped = a->dropped, told = a->announced, fresh = !a->session;
-    a->attempts = 0; a->failed = 0; a->dropped = 0; a->announced = 0; a->session = 1;
+    a->attempts = 0; a->give_up = 0; a->dropped = 0; a->announced = 0; a->session = 1;
+    /* relinks persists across relink cycles (reset only when a packet is finally
+     * accepted, in audio_tick) so the give-up cap can trigger. */
+    a->confirmed = 0; a->modes_tried = (u8)(1 << a->mode);
     a->ok_at = a->stream_at; a->meter = 0; a->meter_peak = 0;
     say(a, "Connected to ", a->tv ? ". TV sound is on." : ". TV sound is muted.");
     if (was_dropped) {
@@ -382,22 +497,28 @@ static void bluetooth_tick(struct app *a, u64 now) {
         long n = sc3(SYS_read, a->bt, (long)ev, sizeof(ev));
         if (n > 0 && n <= (long)sizeof(ev))
             for (unsigned i = 0; i < (unsigned)n / 16; i++)
-                if (ev[i].address == a->target.address && a->wanted) {
+                /* Pairing only happens during connection setup. Ignoring these
+                 * while streaming keeps the state == CONN_STREAMING invariant that
+                 * link_state() relies on, and avoids a stray event knocking a live
+                 * stream back into the forbidden link-state poll. */
+                if (ev[i].address == a->target.address && a->wanted && !a->streaming) {
                     if (ev[i].type == 4) { u64 q[2] = {a->target.address, 1}; sc3(SYS_ioctl, a->bt, BT_PAIR_ACCEPT, (long)q); }
-                    if (ev[i].type == 3) { a->pin_pending = 1; a->deadline = now + 60000000; message(a, "These headphones require a pairing PIN."); }
+                    if (ev[i].type == 3) { a->pin_pending = 1; a->state = CONN_PAIRING; a->deadline = now + 60000000; message(a, "These headphones require a pairing PIN."); }
                 }
     }
     if (!a->wanted) return;
-    if (a->phase == 0) {
-        if (now >= a->next_try) { a->attempts++; a->failed = 0; begin_connect(a); }
+    if (a->state == CONN_RECOVERING) {
+        if (!a->give_up && now >= a->next_try) { a->attempts++; begin_connect(a); }
         return;
     }
-    if (a->phase == 4) {
-        if (device(a, a->target.address)) { end_scan(a); a->phase = 0; begin_connect(a); return; }
-        if (now >= a->deadline) retry_named(a, "Couldn't find ", ". Put it in pairing mode.", 8000000);
+    if (a->state == CONN_DISCOVERING) {
+        if (device(a, a->target.address)) { end_scan(a); begin_connect(a); return; }
+        struct bt_device *p = device(a, bta_profile_pick(&a->profiles, &a->devices));
+        if (p) { a->target = *p; end_scan(a); begin_connect(a); return; }
+        if (now >= a->deadline) fail_named(a, "Couldn't find ", ". Put it in pairing mode.");
         return;
     }
-    if (a->phase == 1) {
+    if (a->state == CONN_CONNECTING || a->state == CONN_PAIRING) {
         u64 address = a->target.address;
         a->btstate = sc3(SYS_ioctl, a->bt, BT_LINK_STATE, (long)&address);
         if (a->btstate >= 5 && a->btstate <= 6) {
@@ -406,27 +527,20 @@ static void bluetooth_tick(struct app *a, u64 now) {
                 a->packet_rc = 0; /* diagnostic: leave controller link params untouched */
             } else {
                 a->packet_rc = bt_prepare(address);
-                if (a->packet_rc) { retry(a, "No supported Bluetooth audio link. Retrying shortly."); return; }
+                if (a->packet_rc) { fail(a, "No supported Bluetooth audio link. Retrying shortly."); return; }
             }
-            a->phase = 2; a->deadline = now + 400000;
+            a->state = CONN_CONFIGURING; a->deadline = now + 400000;
         } else if (now >= a->deadline) {
-            retry_named(a, "", " didn't respond. Is it on and nearby?", 8000000);
+            fail_named(a, "", " didn't respond. Is it on and nearby?");
         }
-    } else if (a->phase == 2 && now >= a->deadline) start_audio(a);
+    } else if (a->state == CONN_CONFIGURING && now >= a->deadline) start_audio(a);
 }
 static void roll_second(struct app *a, u64 now) {
     bta_roll_second(a->secs, &a->cur, &a->sec_seq, &a->sec_start, now);
 }
-/* Joint stereo is the default. A headphone can opt out (old dual-channel format)
- * with an empty file /data/bta_audio/dual-<address>. Send type 3 makes the
- * driver encode dual-channel SBC at half bitpool per channel, a format
- * headphones did not agree to at connect, so it renegotiates the stream. Type 4
- * is joint stereo at full bitpool, the format headphones normally agree to. */
-static void load_joint(struct app *a) {
-    char p[40];
-    joint_path(a->target.address, p);
-    a->joint = !(a->target.address && exists(p));
-}
+/* Send type 4 is joint stereo at full bitpool, the format headphones agree to at
+ * connect; type 3 is dual channel, which the driver renegotiates. The mode is
+ * remembered per device (profiles.h) and auto-switched on silence below. */
 static void audio_tick(struct app *a, u64 now) {
     if (!a->streaming) { a->last_send = 0; return; }
     roll_second(a, now);
@@ -445,13 +559,27 @@ static void audio_tick(struct app *a, u64 now) {
             restart_audio(a, "Audio stream changed. Reconnecting...");
             return;
         }
+        /* The test tone does not read the capture ring, so a long test laps it
+         * and leaves readpos stale. On the first capture read after one, drop to
+         * the live write cursor and prebuffer afresh instead of sending old or
+         * lapped audio. */
+        if (a->snap) { a->readpos = writepos; a->snap = 0; bta_pace_reset(&a->pace, now); }
         unsigned available = bta_ring_available(writepos, a->readpos);
-        if (available > 0xc000) { a->readpos = writepos; a->resyncs++; return; }
-        if (available < 1536) return;
-        backlog = available;
+        /* Clock-paced send with a bounded backlog (see pacing.h): prebuffer the
+         * target cushion, then one packet per ~4 ms, dropping the oldest bytes
+         * when the backlog runs ahead, instead of bursting and resyncing only at
+         * ~128 ms. WAIT also covers the prebuffer, so it is not an underrun. */
+        struct bta_pace_step step = bta_pace_run(&a->pace, now, available);
+        if (step.kind == BTA_PACE_WAIT) return;
+        if (step.kind == BTA_PACE_UNDERRUN) { a->underruns++; return; }
+        if (step.skip) {
+            a->readpos = bta_ring_advance(a->readpos, step.skip);
+            if (step.kind == BTA_PACE_RESYNC) a->resyncs++; else a->drops++;
+        }
+        backlog = available - step.skip; /* audio actually held and sent, after any trim */
         a->readpos = bta_convert_capture(a->ring, a->readpos, a->volume, pcm, &a->level, &peak);
     }
-    struct audio_req req = {a->target.address, pcm, sizeof(pcm), a->joint ? 4 : 3, 0};
+    struct audio_req req = {a->target.address, pcm, sizeof(pcm), (u32)conn_send_type(a->mode), 0};
     a->last_rc = sc3(SYS_ioctl, a->bt, BT_SEND_AUDIO, (long)&req);
     {
         u64 done = a->clock();
@@ -472,13 +600,32 @@ static void audio_tick(struct app *a, u64 now) {
         a->last_send = now;
     }
     if (a->last_rc == 0) {
+        /* Connected but the PS4 is refusing audio: the "connected yet silent"
+         * case. First try the other SBC format once, keeping the link (the step
+         * that used to need a manual reconnect); then fall back to a full relink,
+         * and finally ask the user to power-cycle the headphones. */
         if (!a->refused_since) a->refused_since = now;
-        else if (now - a->refused_since > REFUSED_US && a->relinks < 3) { relink(a); return; }
-        else if (now - a->refused_since > REFUSED_US && a->relinks == 3) {
-            a->relinks++;
-            say(a, "The PS4 keeps refusing audio for ", ". Turn the headphones off and on.");
+        else if (now - a->refused_since > REFUSED_US) {
+            int other = conn_other_mode(a->mode);
+            if (!(a->modes_tried & (1 << other))) {
+                a->mode = other; a->modes_tried |= (u8)(1 << other); a->refused_since = 0;
+                say(a, "No sound yet from ", ". Trying the other audio format...");
+            } else if (a->relinks < 2) {
+                relink(a); return;
+            } else if (a->relinks == 2) {
+                a->relinks++;
+                say(a, "The PS4 keeps refusing audio for ", ". Turn the headphones off and on.");
+            }
         }
-    } else if (a->last_rc > 0) { a->refused_since = 0; a->relinks = 0; }
+    } else if (a->last_rc > 0) {
+        a->refused_since = 0; a->relinks = 0;
+        /* A packet was accepted: remember the mode that works for this device. */
+        if (!a->confirmed) {
+            a->confirmed = 1;
+            bta_profile_record_ok(&a->profiles, a->target.address, a->mode, now);
+            a->profile_dirty = 1;
+        }
+    }
     if (a->last_rc < 0) {
         if (++a->errors > 20) link_lost(a);
     } else {
@@ -490,16 +637,16 @@ static void audio_tick(struct app *a, u64 now) {
         if (a->muted != want) mute(a, want);
     }
 }
-/* The one place the connection's real state is decided (see core.h). A UI must
+/* The one place the connection's real state is decided (see conn.h). A UI must
  * show this, never infer it from "selected" or "wanted". */
 static int link_state(struct app *a) {
-    return bta_link_state(a->streaming, a->wanted, a->phase, a->dropped, a->failed);
+    return conn_link_state(a->state, a->dropped, a->give_up);
 }
 static int retry_in_ms(struct app *a, u64 now) {
-    return bta_retry_in_ms(a->wanted, a->streaming, a->phase, a->next_try, now);
+    return conn_retry_in_ms(a->state, a->give_up, a->next_try, now);
 }
 static int quiet_for_ms(struct app *a, u64 now) {
-    return bta_quiet_for_ms(a->streaming, a->ok_at, now);
+    return conn_quiet_for_ms(a->state, a->ok_at, now);
 }
 /* reveal: include the live pairing code. Set only for a loopback HTTP request,
  * so a future console app can read it; never for a LAN response, and never for
@@ -521,15 +668,20 @@ static unsigned status(struct app *a, char *out, unsigned cap, int reveal) {
     field(&w, "wanted", a->wanted);
     field(&w, "streaming", a->streaming);
     field(&w, "tv_enabled", a->tv);
-    field(&w, "joint", a->joint);
-    field(&w, "send_type", a->joint ? 4 : 3);
+    field(&w, "joint", a->mode == SBC_JOINT);
+    field(&w, "send_type", conn_send_type(a->mode));
     field(&w, "relinks", a->relinks_total);
+    field(&w, "latency_mode", a->latency_mode);
+    field(&w, "drops", a->drops);
+    field(&w, "underruns", a->underruns);
     field(&w, "refused_ms", a->refused_since ? (long)((now - a->refused_since) / 1000) : 0);
     field(&w, "hdmi_muted", a->muted == 1);
     field(&w, "scanning", a->scanning);
     field(&w, "pin_pending", a->pin_pending);
     field(&w, "test", now < a->test_until);
     field(&w, "link", link_state(a));
+    append(&w, ",\"state\":");
+    quoted(&w, conn_state_name(a->state));
     field(&w, "attempts", a->attempts);
     field(&w, "retry_ms", retry_in_ms(a, now));
     field(&w, "meter", a->meter);
@@ -735,11 +887,10 @@ static void dispatch(struct app *a, struct client *c) {
         struct bt_device chosen = *d;
         u64 old = a->target.address;
         end_scan(a); stop_audio(a);
-        if (save_target(a, &chosen)) { response(c, "500 Internal Server Error", "text/plain", "Cannot save selection.", 22); return; }
-        load_joint(a);
+        if (select_device(a, &chosen)) { response(c, "500 Internal Server Error", "text/plain", "Cannot save selection.", 22); return; }
         if (old != mac && a->bt >= 0) sc3(SYS_ioctl, a->bt, BT_DROP_LINK, (long)&old);
-        a->wanted = 1; a->next_try = 0;
-        a->dropped = a->failed = a->announced = a->session = 0;
+        a->wanted = 1; a->state = CONN_RECOVERING; a->next_try = 0;
+        a->dropped = a->give_up = a->announced = a->session = 0;
         a->attempts = 0; a->relinks = 0; a->refused_since = 0;
         sc3(SYS_unlink, (long)TV_ON, 0, 0); a->tv = 0;
         say(a, "Connecting to ", "...");
@@ -754,6 +905,7 @@ static void dispatch(struct app *a, struct client *c) {
         long rc = sc3(SYS_ioctl, a->bt, BT_PIN_REPLY, (long)&q);
         if (rc) { response(c, "500 Internal Server Error", "text/plain", "PIN submission failed.", 22); return; }
         a->pin_pending = 0;
+        a->state = CONN_CONNECTING; a->deadline = a->clock() + 30000000;
         message(a, "Pairing PIN submitted.");
     } else if (starts(c->input, "POST /api/volume/")) {
         const char *p = c->input + 17;
@@ -763,38 +915,43 @@ static void dispatch(struct app *a, struct client *c) {
         if (save_volume(a, (int)value)) { response(c, "500 Internal Server Error", "text/plain", "Cannot save volume.", 19); return; }
     } else if (starts(c->input, "POST /api/test HTTP/1.")) {
         if (!a->streaming || a->bt < 0 || a->btstate < 5 || a->btstate > 6) { response(c, "409 Conflict", "text/plain", "Connect headphones first.", 25); return; }
-        a->test_phase = 0; a->test_next = 0; a->test_until = a->clock() + 2000000;
+        a->test_phase = 0; a->test_next = 0; a->test_until = a->clock() + 2000000; a->snap = 1;
         message(a, "Playing test tone.");
     } else if (starts(c->input, "POST /api/connect HTTP/1.")) {
         a->wanted = 1; a->relinks = 0;
         sc3(SYS_unlink, (long)TV_ON, 0, 0); a->tv = 0;
         if (!a->streaming) {
-            end_scan(a); a->phase = 0; a->next_try = 0;
-            a->dropped = a->failed = a->announced = a->session = 0;
+            end_scan(a); a->state = CONN_RECOVERING; a->next_try = 0;
+            a->dropped = a->give_up = a->announced = a->session = 0;
             a->attempts = 0;
             say(a, "Connecting to ", "...");
         }
     } else if (starts(c->input, "POST /api/stop HTTP/1.")) {
         a->wanted = 0; end_scan(a); stop_audio(a); drop_link(a);
-        a->relinks = 0; a->refused_since = 0;
+        a->state = CONN_IDLE; a->relinks = 0; a->refused_since = 0;
         closefd(a->bt); a->bt = -1;
-        a->dropped = a->failed = a->announced = a->session = 0;
+        a->dropped = a->give_up = a->announced = a->session = 0;
         a->attempts = 0;
         message(a, "Earbud audio stopped. TV sound restored.");
     } else if (starts(c->input, "POST /api/joint-on HTTP/1.")) {
         if (!a->target.address) { response(c, "409 Conflict", "text/plain", "Select headphones first.", 24); return; }
-        char p[40];
-        joint_path(a->target.address, p);
-        sc3(SYS_unlink, (long)p, 0, 0);
-        a->joint = 1;
+        bta_profile_touch(&a->profiles, &a->target);
+        bta_profile_set_mode(&a->profiles, a->target.address, SBC_JOINT);
+        if (save_profiles(a)) { response(c, "500 Internal Server Error", "text/plain", "Cannot save preference.", 23); return; }
+        a->mode = SBC_JOINT;
         message(a, "Joint stereo is on for these headphones.");
     } else if (starts(c->input, "POST /api/joint-off HTTP/1.")) {
         if (!a->target.address) { response(c, "409 Conflict", "text/plain", "Select headphones first.", 24); return; }
-        char p[40];
-        joint_path(a->target.address, p);
-        if (put(p, "on\n", 3)) { response(c, "500 Internal Server Error", "text/plain", "Cannot save preference.", 23); return; }
-        a->joint = 0;
+        bta_profile_touch(&a->profiles, &a->target);
+        bta_profile_set_mode(&a->profiles, a->target.address, SBC_DUAL);
+        if (save_profiles(a)) { response(c, "500 Internal Server Error", "text/plain", "Cannot save preference.", 23); return; }
+        a->mode = SBC_DUAL;
         message(a, "Joint stereo is off for these headphones.");
+    } else if (starts(c->input, "POST /api/latency/")) {
+        const char *p = c->input + 18;
+        if (p[0] < '0' || p[0] > '2' || !starts(p + 1, " HTTP/1.")) { response(c, "400 Bad Request", "text/plain", "Latency mode must be 0-2.", 25); return; }
+        if (save_latency(a, p[0] - '0')) { response(c, "500 Internal Server Error", "text/plain", "Cannot save latency mode.", 25); return; }
+        message(a, a->latency_mode == BTA_LAT_LOW ? "Latency mode: lowest." : a->latency_mode == BTA_LAT_STABLE ? "Latency mode: most stable." : "Latency mode: balanced.");
     } else if (starts(c->input, "POST /api/tv-on HTTP/1.")) {
         if (put(TV_ON, "on\n", 3)) { response(c, "500 Internal Server Error", "text/plain", "Cannot save preference.", 23); return; }
         a->tv = 1; mute(a, 0);
@@ -804,7 +961,7 @@ static void dispatch(struct app *a, struct client *c) {
         if (a->streaming) mute(a, 1);
     } else if (starts(c->input, "POST /api/quit HTTP/1.")) {
         a->wanted = 0; stop_audio(a); a->quit = 1;
-        a->dropped = a->failed = a->announced = a->session = 0;
+        a->state = CONN_IDLE; a->dropped = a->give_up = a->announced = a->session = 0;
         a->attempts = 0;
         message(a, "Bluetooth Audio stopped. TV sound restored.");
     } else {
@@ -939,20 +1096,47 @@ void *bta_worker(void *arg) {
     sc3(SYS_chmod, (long)"/data/bta_audio", 0777, 0);
     sc3(SYS_unlink, (long)BTA_STOP, 0, 0);
     resolve("sceKernelGetRandomNumber", &a.getrandom); /* optional; fill_random falls back */
-    load_target(&a);
-    load_joint(&a);
+    load_profiles(&a);
+    init_target(&a);
     load_volume(&a);
+    load_latency(&a);
     a.tv = exists(TV_ON);
     sc3(SYS_unlink, (long)PAIR_CODE, 0, 0); /* a code never outlives the service session */
     { char code[BTA_CODE_DIGITS + 1]; /* phone control stays off unless the flag file is present */
       persist_lan(sync_lan(&a, exists(LAN_ON), code), code); }
     a.hdmi = sc3(SYS_open, (long)"/dev/hdmi", 2, 0);
-    message(&a, "Ready. Select your headphones and press Connect.");
-    notify("Bluetooth Audio is ready and idle. Open the home-screen app, then press Connect. Web controls: http://127.0.0.1:8097/ (or your PS4 IP on port 8097).");
+    if (a.wanted) {
+        /* A remembered device exists: reconnect to whichever one is turned on. */
+        a.state = CONN_RECOVERING; a.next_try = 0;
+        say(&a, "Reconnecting to ", "...");
+        notify("Bluetooth Audio is reconnecting to your headphones. Open the app or web controls to change the device or settings.");
+    } else {
+        message(&a, "Ready. Select your headphones and press Connect.");
+        notify("Bluetooth Audio is ready and idle. Open the home-screen app, then press Connect. Web controls: http://127.0.0.1:8097/ (or your PS4 IP on port 8097).");
+    }
     init_lock(&a);
     start_sender(&a);
     while (!a.quit) {
         u64 now = a.clock();
+        /* Rest-mode resume: a long gap between loop iterations means the console
+         * slept and woke, so the driver handle and the in-RAM firmware patch may
+         * be stale. Tear down and let the normal connect path (which re-applies
+         * the patch and reopens /dev/bt) reconnect from scratch. Skip it when
+         * audio is actually still flowing (a recently accepted packet): then the
+         * gap was only this normal-priority worker thread being starved while the
+         * real-time sender kept streaming, not a real suspend. */
+        if (conn_resumed(a.last_tick, now, CONN_RESUME_GAP_US) &&
+            !(a.streaming && now >= a.ok_at && now - a.ok_at < CONN_RESUME_GAP_US)) {
+            lock_state(&a);
+            stop_audio(&a);
+            closefd(a.bt); a.bt = -1;
+            if (a.wanted) {
+                a.state = CONN_RECOVERING; a.dropped = a.give_up = 0; a.attempts = 0; a.next_try = now;
+                message(&a, "Woke from rest mode. Reconnecting...");
+            } else a.state = CONN_IDLE;
+            unlock_state(&a);
+        }
+        a.last_tick = now;
         if (now >= a.net_at) { network_tick(&a, now); a.net_at = now + 4000; } /* locks around each request */
         if (a.quit) break;
         char json[12000];
@@ -978,6 +1162,12 @@ void *bta_worker(void *arg) {
         if (beat) {
             /* File I/O stays outside the lock: a slow write must never hold up the sender. */
             put("/data/bta_audio/status.json", json, n);
+            if (a.profile_dirty) {
+                lock_state(&a);
+                struct bta_profiles snap = a.profiles; a.profile_dirty = 0;
+                unlock_state(&a);
+                put_profiles(&snap);
+            }
             if (exists(BTA_STOP)) break;
             int tv = exists(TV_ON);
             int lan = exists(LAN_ON);

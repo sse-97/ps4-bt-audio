@@ -17,8 +17,18 @@ not work. Output only: no microphone or chat input.
   headphones agree to when they connect. The old format (dual channel) made the PS4
   renegotiate the stream with the headphones, and some models stayed connected but silent.
   You can turn joint stereo off per headphone on the web page if a model needs the old format.
-- **Automatic recovery.** If the PS4 refuses audio for 4 seconds, the service drops the
-  Bluetooth link and reconnects by itself (up to 3 times in a row).
+- **Automatic recovery with format fallback.** If a headset connects but stays silent, the
+  service switches the SBC format for you (the step that used to need a manual reconnect)
+  before dropping and re-establishing the link. Reconnect attempts back off 2, 4, 8 then 16
+  seconds; after that it stops and asks you to power-cycle the headphones.
+- **Remembered devices.** The service keeps a profile per headphone — the format that last
+  produced sound, when it last connected — and remembers several. On startup it reconnects
+  to whichever remembered device is turned on, and starts it in the format that worked last.
+- **Explicit connection states.** The link moves through named states (discovering, pairing,
+  connecting, configuring, streaming, recovering), each with its own timeout; the current
+  one is reported as `state` in `GET /api/status`.
+- **Rest-mode resume.** After the console wakes from rest mode the service re-establishes the
+  driver and reconnects on its own.
 - **Disconnect really disconnects.** The Disconnect button (web page, or Triangle in the
   app) drops the Bluetooth link itself, so the next connect starts fresh.
 - **Steadier sending.** Audio goes out from its own thread with the same scheduling the
@@ -44,9 +54,9 @@ The full JSON API — endpoints, the pairing flow and the status fields — is d
 
 ## Known issues
 
-- **Some headphones need a reconnect or two.** If a pair connects but plays nothing, press
-  Disconnect and connect again, or turn the headphones off and on. The automatic recovery
-  handles most of these cases by itself.
+- **A silent headphone usually recovers on its own** now: the service tries the other SBC
+  format and then re-establishes the link. If it still plays nothing after that, turn the
+  headphones off and on, or press Disconnect and connect again.
 - **Brief glitches during game loads** are possible on some headphone models.
 - **Controller drops.** An early build polled the Bluetooth driver while streaming and
   starved the wireless controller's link. The current worker does no driver polling while
@@ -123,6 +133,7 @@ python tools/install_bta.py --host <PS4_IP> --disable-autorun   # undo
 | `/data/GoldHEN/payloads.ini` | GoldHEN AutoRun list. The installer adds `/user/data/payloads/BTA-Audio.bin = 1` under `[AutoRun]` and keeps your other entries |
 | `/data/bta_audio/` | Runtime state: saved headphones (`device.bin`), volume, `status.json`, logs |
 | `/data/bta_audio/dual-<address>` | Present only if you turned joint stereo off for that headphone |
+| `/data/bta_audio/latency.bin` | Saved latency mode (0 lowest, 1 balanced, 2 most stable) |
 | `/data/bta_audio/lan_on` | Create this empty file to allow phone control; delete it to lock the API to the console |
 | `/data/bta_audio/pair_code.txt` | The current six-digit pairing code, written while phone control is on |
 | `/data/bta_audio/stop` | Create this empty file over FTP to request a clean shutdown |
@@ -139,6 +150,59 @@ after the jailbreak, so switch them on first.
 
 To make the PS4 discover headphones from scratch, remove them in **Settings → Devices →
 Bluetooth Devices** (Options, Forget Device), then put them in pairing mode and scan.
+
+## Latency and audio pacing
+
+SBC over Bluetooth can never match a wired headset, and most of the delay comes
+from the headphones' own buffer, which no PS4 software can change. What the
+service controls is how much audio it keeps buffered before the radio. At the
+start of playback it briefly prebuffers a small cushion — the latency target —
+so ordinary scheduling jitter has something to draw down and does not cause
+dropouts. It then paces sends from a clock, one ~4 ms packet at a time, so the
+console-side buffer is fed at the playout rate rather than in bursts, and it
+holds the cushion shallow by dropping the oldest few milliseconds if it ever
+runs ahead, instead of letting up to ~128 ms pile up before a single large
+resync. The audio handed to the radio stays at or below the latency target plus
+one packet (12–20 ms).
+
+Pick a **latency mode** on the web page, or `POST /api/latency/<0-2>`:
+
+| Mode | Service buffer | Trade-off |
+|---|---|---|
+| 0 Lowest | ~8 ms target (≤12 ms) | Least delay, least tolerance for Wi-Fi interference |
+| 1 Balanced (default) | ~12 ms target (≤16 ms) | Good delay with some headroom |
+| 2 Most stable | ~16 ms target (≤20 ms) | Rides out game loads and busy 2.4 GHz Wi-Fi |
+
+The choice is saved in `/data/bta_audio/latency.bin` and survives restarts.
+`GET /api/status` reports `latency_mode`, and the running `drops` (small backlog
+trims) and `underruns` (slots with no audio ready) counters; `GET /api/timing`
+still reports `maxback_ms` and the late-packet counts per second.
+
+### Verifying on the console
+
+The pacing logic is covered off-console by a producer/consumer simulation in
+`tests/test_pacing.c` (run with `make test`), which proves the audio handed to
+the driver is never more than one target-plus-a-packet old, even across a stall.
+The one console check that the host tests cannot make is how the real Bluetooth
+driver and headphones behave. On the test console, confirm:
+
+1. **Backlog stays shallow.** `maxback_ms` at `/api/timing` (the audio actually
+   held, after any trim) stays at or below the mode's ceiling (12/16/20 ms)
+   throughout an hour of play; it does not creep toward the old ~128 ms.
+2. **No creeping delay.** Audio stays in sync through several game loads and a
+   rest-mode sleep/wake cycle. A game load or menu may log one `resyncs` or a few
+   `drops` as the backlog is trimmed back to target, but these stay occasional,
+   not continuous, and `underruns` stays near zero.
+3. **Lower latency is audible.** Switching to Lowest noticeably tightens
+   lip-sync versus Most stable; Most stable has fewer dropouts on busy Wi-Fi.
+4. **No new dropouts or controller lag.** One hour on two headsets with one and
+   two controllers has no audible dropouts (`underruns` near zero) and no
+   controller stutter — the sender still never polls the driver while streaming.
+5. **SBC bitpool (open question).** The driver encodes SBC itself and exposes
+   only joint-stereo vs. dual-channel (the existing Joint stereo toggle); whether
+   the bitpool can be set from the service is still unverified. If a lower-bitpool
+   "stable" or higher-bitpool "high quality" mode is wanted later, that is the
+   console investigation to do first.
 
 ## Build from source
 

@@ -53,6 +53,13 @@ void test_dsp(void) {
     CHECK_EQ(bta_ring_available(0x400, 0x1000), (long)(0xfff0 - 0x1000 + 0x400));
     CHECK_EQ(bta_ring_available(0x500, 0x500), 0);
 
+    /* bta_ring_advance: straight step, the wrap at 0x10000 -> 16, and that a
+     * step landing exactly on 0x10000 wraps to 16 like bta_convert_capture. */
+    CHECK_EQ(bta_ring_advance(0x400, 0x100), 0x500);
+    CHECK_EQ(bta_ring_advance(0xfffc, 4), 16);                 /* 0x10000 -> 16 */
+    CHECK_EQ(bta_ring_advance(0xfffc, 1536), 16 + 1532);       /* 4 bytes then wrap */
+    CHECK_EQ(bta_ring_advance(16, 0xfff0), 16);                /* a whole lap */
+
     static unsigned char ring[0x10000];
 
     /* A hand-built case: known floats -> known PCM at volume 100 and 50,
