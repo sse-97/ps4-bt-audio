@@ -107,11 +107,13 @@ also start after every jailbreak without opening the app, add the AutoRun entry 
 2. In GoldHEN's settings menu, open Debug Settings, set the package source to **HDD**, then
    run **Package Installer** and install it. If an older version is installed, delete it from
    the home screen first (Options, Delete).
-3. Make sure GoldHEN's **BinLoader (port 9090)** is enabled. It accepts one payload per
+3. Make sure GoldHEN's BinLoader is on: **Enable PayLoader Server** (port 9090) in GoldHEN's
+   Servers Settings. If it is off, the app's Start dialog says so. It accepts one payload per
    jailbreak (any connection uses it up), so either let the app start the service **or**
    send it from your PC with Option B, not both. Then open **Bluetooth Audio** from
-   the home screen. The app renders at 1080p like a PS4 Settings screen: your devices,
-   then **Add Device**, **Volume** (left/right to change it), **Keep TV Sound On**,
+   the home screen. The app renders at 1080p like a PS4 Settings screen: the devices
+   that have played sound through it before (others nearby are listed under **Add
+   Device**), then **Add Device**, **Volume** (left/right to change it), **Keep TV Sound On**,
    **Audio Latency**, **Allow Phone Control** and **Stop Audio Service**. The confirm
    button connects the focused device; on the connected one it opens the Options menu
    (**Test Sound**, **Disconnect**), as does the Options button. The cancel button

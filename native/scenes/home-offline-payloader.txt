@@ -1,0 +1,5 @@
+# Audio service not answering and GoldHEN's PayLoader Server is off: the dialog says why
+screen=0
+online=0
+notice=Turn on GoldHEN's PayLoader Server, then press Start.
+t=500

@@ -15,7 +15,7 @@ void test_model(void) {
         "\"meter\":58,\"quiet_ms\":0,\"connect_rc\":0,\"audio_rc\":0,\"lan\":1,"
         "\"latency_mode\":2,\"drops\":3,\"underruns\":1,\"state\":\"streaming\","
         "\"pair_code\":\"048213\",\"selected\":\"aabbccddeeff\",\"name\":\"AirPods Pro\","
-        "\"devices\":[{\"address\":\"aabbccddeeff\",\"name\":\"AirPods Pro\",\"audio\":1},"
+        "\"devices\":[{\"address\":\"aabbccddeeff\",\"name\":\"AirPods Pro\",\"audio\":1,\"known\":1},"
         "{\"address\":\"112233445566\",\"name\":\"JBL Flip 6\",\"audio\":1}]}";
     struct ui_state s;
     CHECK(model_parse(body, &s) == 1);
@@ -37,6 +37,8 @@ void test_model(void) {
     CHECK_EQ(s.devices[0].address, 0xaabbccddeeffUL);
     CHECK_EQ(s.devices[1].address, 0x112233445566UL);
     CHECK_EQ(s.devices[1].audio, 1);
+    CHECK_EQ(s.devices[0].known, 1);
+    CHECK_EQ(s.devices[1].known, 0);   /* older services omit the field */
 
     /* Negative numbers, and a device name with escaped quote/backslash. */
     const char *esc =
