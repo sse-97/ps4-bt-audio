@@ -1,9 +1,12 @@
-# Add Device: searching, two devices found so far
+# Add Device: searching, three devices answered so far (strongest first); the
+# remembered earbuds in their case didn't answer and aren't listed
 screen=1
 scanning=1
 link=5
 focus=0
 online=1
-dev=AirPods Pro|aabbccddeeff|1
-dev=Beats Studio|222233334444|1
+dev=AirPods Pro|aabbccddeeff|1|1|0|0
+dev=Beats Studio|222233334444|1|0|1|-71
+dev=Libratone ONE|c467b535dd68|1|1|1|-48
+dev=Xbox Wireless Headset|1c1adfa95585|1|0|1|-62
 t=800

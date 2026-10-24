@@ -102,7 +102,7 @@ The important fields:
 | `drops`, `underruns` | Packets dropped and buffer underruns while streaming (choppy-audio signals). |
 | `volume`, `meter`, `level` | Headphone volume and output level. |
 | `tv_enabled`, `hdmi_muted` | TV-sound preference and current mute state. |
-| `name`, `selected`, `devices[]` | The chosen device and the listed audio devices. Each device has `address`, `name`, `audio` (1 if it advertises the audio service) and `known` (1 if it has played sound through the service before; the home-screen app lists only these on Home). |
+| `name`, `selected`, `devices[]` | The chosen device and the listed audio devices. Each device has `address`, `name`, `audio` (1 if it advertises the audio service), `known` (1 if it has played sound through the service before; the home-screen app lists only these on Home), `found` (1 if it answered a search since Add Device was last opened; the app's Add Device lists only these) and `rssi` (its signal strength then, in dBm; 0 when not found). The list itself is every device the console's Bluetooth knows, including ones that are off or in their case. |
 | `lan` | 1 if phone control is on. |
 | `ip` | The console's LAN address, e.g. `"192.168.1.97"`, while phone control is on. Absent when it is off or the address isn't known. |
 | `pair_code` | The current six-digit code. **Only present for console-local callers**, never in a LAN response. |

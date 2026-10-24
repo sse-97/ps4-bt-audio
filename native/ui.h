@@ -302,9 +302,23 @@ static int dev_active(const struct ui_ctx*c,int i){
  int l=ui_link(c);
  return i>=0&&i<state.count&&state.devices[i].address==state.selected&&l!=LINK_IDLE&&l!=LINK_OFFLINE;
 }
+/* Add Device lists the devices that answered the search, strongest signal first:
+ * the driver's list also keeps every device it ever knew, such as earbuds lying in
+ * their case. Row k shows state.devices[scan_dev(k)]. */
+static int scan_count(void){int n=0;for(int i=0;i<state.count;i++)n+=state.devices[i].found!=0;return n;}
+static int scan_dev(int k){
+ int order[UI_DEVICE_LIMIT],n=0;
+ for(int i=0;i<state.count;i++){
+  if(!state.devices[i].found)continue;
+  int j=n++;
+  while(j>0&&state.devices[order[j-1]].rssi<state.devices[i].rssi){order[j]=order[j-1];j--;}
+  order[j]=i;
+ }
+ return k>=0&&k<n?order[k]:-1;
+}
 /* Home lists the devices that have played sound through the service before, plus
- * the one it is linked or linking to; Add Device lists everything nearby. Home
- * row k (k < home_count) shows state.devices[home_dev(k)]. */
+ * the one it is linked or linking to. Home row k (k < home_count) shows
+ * state.devices[home_dev(k)]. */
 static int on_home(const struct ui_ctx*c,int i){return state.devices[i].known||dev_active(c,i);}
 static int home_count(const struct ui_ctx*c){int n=0;for(int i=0;i<state.count;i++)n+=on_home(c,i);return n;}
 static int home_dev(const struct ui_ctx*c,int k){
@@ -388,10 +402,10 @@ static void draw_home(const struct ui_ctx*c){
  scrollbar(LIST_Y,HOME_VISIBLE,n,c->top);
 }
 static void draw_scan(const struct ui_ctx*c){
- int n=state.count;
+ int n=scan_count();
  if(state.scanning||ui_link(c)==LINK_SEARCHING){spinner(LIST_X+42,198,11,WHITE,g_now/1000,3);text(F_ROW,LIST_X+96,208,"Searching...",WHITE);}
  else if(!n)text(F_ROW,LIST_X+96,208,"No devices found.",WHITE);
- for(int r=0;r<SCAN_VISIBLE&&c->top+r<n;r++)device_row(c,c->top+r,244+r*ROW_H,c->focus==c->top+r);
+ for(int r=0;r<SCAN_VISIBLE&&c->top+r<n;r++)device_row(c,scan_dev(c->top+r),244+r*ROW_H,c->focus==c->top+r);
  scrollbar(244,SCAN_VISIBLE,n,c->top);
 }
 static const char*TEST_ITEMS[TEST_COUNT]={"Yes","No, Play Again","Disconnect"};

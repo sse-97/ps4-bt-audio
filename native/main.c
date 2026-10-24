@@ -169,7 +169,7 @@ static void clamp_home_focus(void){
 /* Home index of one of the fixed rows (ROW_*), below however many devices Home lists. */
 static int fixed_row(int row){return home_count(&ctx)+row;}
 static void clamp_scan_focus(void){
- int n=state.count;if(n<=0){ctx.focus=0;ctx.top=0;return;}
+ int n=scan_count();if(n<=0){ctx.focus=0;ctx.top=0;return;}
  if(ctx.focus<0)ctx.focus=0;if(ctx.focus>=n)ctx.focus=n-1;scroll_to(SCAN_VISIBLE);
 }
 static void go_home(int row){ctx.screen=SCREEN_HOME;ctx.menu=0;ctx.focus=row;clamp_home_focus();}
@@ -225,22 +225,6 @@ static int system_away(unsigned buttons,int*behind){
  return over||bg||icpt||resumed;
 }
 
-/* The output mode the app asks for: none in particular. Left unset, it gets the
- * system's default picture, so opening it over an HDR game switched the TV out of
- * HDR and back (KLog: set_mode RGB2020_PQ -> CERGB, Hdmi Init, seconds of black
- * screen each way). "Any" may let the console keep the game's mode and convert
- * this picture, as it does for the home screen. OpenOrbis v0.5.4 declares both
- * calls without prototypes; the mode layout is the one shadPS4 uses. */
-typedef struct { uint32_t size; uint8_t encoding,range,colorimetry,depth; uint64_t refresh_rate,resolution; uint8_t reserved[8]; } VideoOutMode;
-static void any_output_mode(int video){
- VideoOutMode mode;memset(&mode,0,sizeof(mode));
- ((void(*)(VideoOutMode*,uint32_t))(void*)sceVideoOutModeSetAny_)(&mode,sizeof(mode));
- int32_t(*configure)(int32_t,uint32_t,const VideoOutMode*,const void*,uint32_t,uint32_t)=
-  (int32_t(*)(int32_t,uint32_t,const VideoOutMode*,const void*,uint32_t,uint32_t))(void*)sceVideoOutConfigureOutputMode_;
- int rc=configure(video,0,&mode,NULL,sizeof(mode),0);
- char m[64];snprintf(m,sizeof(m),"Video output mode: any, rc=0x%x",rc);logline(m);
-}
-
 /* Back on the app's main screen points to the PS button, which leaves the app open.
  * Not sceSystemServiceNavigateToGoHome: on 13.52 that crashed the system's home
  * screen (ShellUI) each time, an unhandled 0x80960009 while switching the user. */
@@ -268,7 +252,6 @@ int main(void){
  char diag[128];
  int video=sceVideoOutOpen(0xff,0,0,0);
  if(video<0){snprintf(diag,sizeof(diag),"VideoOutOpen failed rc=0x%x",video);logline(diag);return close_app();}
- any_output_mode(video);
  off_t memory;size_t fbbytes=(size_t)WIDTH*HEIGHT*4;size_t size=(2*fbbytes+0x1FFFFF)&~(size_t)0x1FFFFF;void*base=0;
  size_t dmem=sceKernelGetDirectMemorySize();
  int arc=sceKernelAllocateDirectMemory(0,dmem,size,0x200000,3,&memory),mrc=arc<0?0:sceKernelMapDirectMemory(&base,size,0x33,0,memory,0x200000);
@@ -299,10 +282,13 @@ int main(void){
     * same fixed row when the device list above it grows or shrinks. */
    int home=ctx.screen==SCREEN_HOME,nd=home_count(&ctx),on_device=home&&ctx.focus>=0&&ctx.focus<nd,fixed=ctx.focus-nd;
    unsigned long faddr=on_device?state.devices[home_dev(&ctx,ctx.focus)].address:0;
+   /* Add Device re-sorts by signal on every refresh: the cursor stays on its device. */
+   int si=ctx.screen==SCREEN_SCAN?scan_dev(ctx.focus):-1;unsigned long saddr=si>=0?state.devices[si].address:0;
    refresh();poll=now+(!online?2000000:(l==LINK_STREAMING?300000:500000));
    l=online?(state.link>=LINK_IDLE&&state.link<=LINK_SEARCHING?state.link:LINK_IDLE):LINK_OFFLINE;
    if(on_device){int n=home_count(&ctx);for(int k=0;k<n;k++)if(state.devices[home_dev(&ctx,k)].address==faddr){ctx.focus=k;break;}}
    else if(home)ctx.focus=fixed_row(fixed);
+   if(saddr){int n=scan_count();for(int k=0;k<n;k++)if(state.devices[scan_dev(k)].address==saddr){ctx.focus=k;break;}}
   }
   /* Start shows "Starting audio service..." for a moment before it tries, so a
    * try that fails at once still visibly happened before its reason returns. */
@@ -374,8 +360,8 @@ int main(void){
    }
    if(pressed&(CANCEL|ORBIS_PAD_BUTTON_OPTIONS))ctx.menu=0;
   }else if(ctx.screen==SCREEN_SCAN){
-   step(&ctx.focus,pressed,state.count);clamp_scan_focus();
-   if(pressed&CONFIRM){if(state.count>0&&ctx.focus>=0&&ctx.focus<state.count){scan_addr=state.devices[ctx.focus].address;scan_connecting=1;logline("action: select (add)");select_index(ctx.focus);}}
+   step(&ctx.focus,pressed,scan_count());clamp_scan_focus();
+   if(pressed&CONFIRM){int i=scan_dev(ctx.focus);if(i>=0){scan_addr=state.devices[i].address;scan_connecting=1;logline("action: select (add)");select_index(i);}}
    if(pressed&ORBIS_PAD_BUTTON_TRIANGLE&&!state.scanning&&l!=LINK_CONNECTING){logline("action: scan again");action("/api/scan");}
    /* Leaving tells the service, which then reconnects the device Add Device paused. */
    if(pressed&CANCEL){logline("action: leave add");action("/api/scan-done");go_home(fixed_row(ROW_ADD));}

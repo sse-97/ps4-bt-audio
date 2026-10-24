@@ -21,7 +21,8 @@ enum {
 };
 
 #define UI_DEVICE_LIMIT 32
-struct ui_device { unsigned long address; int audio, known; char name[96]; };
+/* found: it answered a search since Add Device opened; rssi: its signal then (dBm). */
+struct ui_device { unsigned long address; int audio, known, found, rssi; char name[96]; };
 struct ui_state {
     int link, volume, tv, scanning, pin_pending, test, lan;
     int attempts, retry_ms, meter, quiet_ms;
@@ -161,6 +162,8 @@ static int model_parse(const char *body, struct ui_state *s) {
             d->address = j_mac(p, "address");
             d->audio = (int)j_int(p, "audio", 0);
             d->known = (int)j_int(p, "known", 0);
+            d->found = (int)j_int(p, "found", 0);
+            d->rssi = (int)j_int(p, "rssi", 0);
             j_str(p, "name", d->name, sizeof(d->name));
             p = j_ws(j_skip(p));
             if (*p == ',') p = j_ws(p + 1);

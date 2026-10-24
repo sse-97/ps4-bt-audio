@@ -41,7 +41,7 @@ Tick each box. If anything fails, note the `message`, `state` and the relevant c
 ## 2. First connection (Add Device)
 
 - [ ] **Add flow.** The Home list's **Add Device** opens **Searching...** with a live scan
-      listing audio devices newest-first; Triangle searches again.
+      listing the devices that answer, strongest signal first; Triangle searches again.
 - [ ] **Home lists your devices only.** Before the first connection Home shows no devices
       (nearby TVs and car stereos appear only under **Add Device**); once a device has
       played sound, it stays on Home.
@@ -149,10 +149,6 @@ Tick each box. If anything fails, note the `message`, `state` and the relevant c
       button and coming back (from the home screen or the Quick Menu) shows the app as
       it was, without starting it over; the button that brought it back does nothing in
       it. `app.log` shows `focus:` lines for each switch.
-- [ ] **No black screen over an HDR game.** With an HDR game running (e.g. Horizon
-      Zero Dawn on an HDR TV), open the app and go back: the TV should not go black.
-      `app.log` shows `Video output mode: any, rc=…`; KLog's `video: port:0 …` line on
-      each switch shows whether the mode still changes (`RGB2020_PQ` vs `CERGB`).
 - [ ] **App is display-only.** Closing the app (Quick Menu > Close Application, or Close in
       the Start dialog) returns to the home screen without an error (no CE-34878-0), and
       leaves the service and audio running. If it does crash, `app.log`'s last `exit:`
@@ -204,7 +200,13 @@ beep). Every check here must leave the controller connected.
       after ~15000 ms`), not after the 30 s window.
 - [ ] **Driver events.** `service.log` has `bt event: type …` lines around each
       connection attempt (at most 12 in 10 s, and a stream's first 20). With a device
-      that connects but stays silent (e.g. AirPods), they show what it asks for.
+      that connects but stays silent (e.g. AirPods), they show what it asks for. The
+      search's reports (types 1 and 16) aren't logged; each search ends with `scan:
+      ended, devices that answered: N`.
+- [ ] **Add Device lists who answers.** With earbuds in their closed case and a
+      headset in pairing mode, Add Device lists the headset but not the earbuds, and
+      orders the list by signal (move a device closer and it rises). The cursor stays
+      on its device when the order changes.
 
 ## Known limitations / not verifiable here
 
@@ -213,6 +215,14 @@ beep). Every check here must leave the controller connected.
 - **Firmware gate:** the payload refuses to run on any firmware but 13.520.001 (kernel
   fingerprint mismatch) and shows a message rather than exiting silently — this can only be
   confirmed by trying another firmware, which is out of scope.
+- **Silent headsets:** AirPods Pro (1st and 2nd generation) and the Xbox Wireless Headset
+  connect, pair and accept every packet, but play nothing in either stereo format; a
+  Libratone ONE plays. The service sees no difference (`bt event` type 11 after setup reads
+  115 for the Libratone, 95/56/88 for the others, meaning unknown). Next step: record what
+  the PS4 sends, e.g. with a Linux machine posing as a speaker.
+- **HDR games:** opening the app over an HDR game switches the TV out of HDR and back
+  (about a second of black each way; KLog `set_mode`, `RGB2020_PQ` vs `CERGB`). The app
+  draws a normal picture; asking VideoOut for "any" output mode changed nothing.
 - **SBC bitpool:** the driver encodes SBC itself and exposes only joint-stereo vs. dual-channel.
   Whether the bitpool can be set from the service (for a lower-bitpool "stable" or higher
   "high quality" mode) is unverified and would be the next console investigation.
