@@ -31,4 +31,5 @@ void test_strfmt(void);
 void test_dsp(void);
 void test_core(void);
 void test_timing(void);
+void test_pacing(void);
 #endif

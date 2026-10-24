@@ -14,6 +14,7 @@ int main(void) {
     printf("dsp...\n");    test_dsp();
     printf("core...\n");   test_core();
     printf("timing...\n"); test_timing();
+    printf("pacing...\n"); test_pacing();
     printf("\n%d checks, %d failures\n", g_test.checks, g_test.failures);
     return g_test.failures ? 1 : 0;
 }
