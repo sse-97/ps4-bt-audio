@@ -357,11 +357,56 @@ static void device_row(const struct ui_ctx*c,int i,int x,int y,int w,int sel){
  }
 }
 
+/* ---- first-run / empty Home: one centered gallery hero instead of two empty
+ * cards. Leads with a single call to action and lets whitespace do the work,
+ * the design system's gallery pace. The focus ring is unchanged (Add=0, Fix=1),
+ * so main.c's input handling needs no change. ---- */
+static void draw_home_empty(const struct ui_ctx*c){
+ int off=!c->online;uint32_t accent=off?RED:PSBLUEH;
+ if(off)banner(c);                       /* offline keeps the how-to-start banner */
+ int cx=960,cy=402;
+ icon_c(I_GLOW,cx,cy,accent,off?95:66);
+ disc(cx,cy,104,accent,255);
+ disc(cx,cy,99,mixc(CARD,accent,off?46:32),255);
+ icon_c(I_HERO,cx,cy-2,off?mixc(TEXT,RED,30):TEXT,255);
+ if(off){disc(cx+72,cy+72,30,CARD,255);disc(cx+72,cy+72,26,RED,255);icon_c(I_BANG,cx+72,cy+72,BG_TOP,255);}
+ text_c(F_TITLE,cx,566,off?"Start the audio service":"Add your headphones",TEXT,1400);
+ text_c(F_BODY,cx,620,off?"Press the confirm button below to start it.":
+  "Pair your first wireless headphones, earbuds or speaker. It only takes a minute.",DIM,1320);
+ struct{int icon;const char*label;}acts[2]={
+  {I_ADD, off?"Start service":"Add headphones"},
+  {I_WRENCH,"Fix a problem"}};
+ int ph=80,py=700;
+ int w0=112+text_w(F_NAME,acts[0].label),w1=112+text_w(F_NAME,acts[1].label);
+ int gap=28,x0=cx-(w0+gap+w1)/2;int xs[2]={x0,x0+w0+gap},ws[2]={w0,w1};
+ for(int a=0;a<2;a++){
+  int sel=c->focus==a,x=xs[a],w=ws[a];
+  /* Dark base both: focus (Add is focus 0 on entry) lights with the power-on
+   * signature, the same read as every other focusable element. */
+  focus_panel(x,py,w,ph,ph/2,sel,CARD2);
+  icon_c(acts[a].icon,x+48,py+ph/2,sel?TEXT:PSBLUEH,255);
+  text(F_NAME,x+80,py+ph/2+13,acts[a].label,TEXT);
+ }
+}
+
 /* ======================= Home ======================= */
 static void draw_home(const struct ui_ctx*c){
  uint64_t t=g_now/1000;int l=ui_link(c);uint32_t col=link_color(l);int n=state.count;
  int testing=state.test||g_now<testing_until;
  char buf[TBUF];
+ if(n==0){
+  draw_home_empty(c);
+  if(!c->pinmode){
+   char tvlabel[32];snprintf(tvlabel,sizeof(tvlabel),"TV: %s",state.tv?"On":"Muted");
+   struct chip chips[4]={
+    {confirm_icon(c),0,0,!c->online?"Start service":"Select",DIM},
+    {I_BTRI,0,0,"Add headphones",DIM},
+    {I_BSQUARE,0,0,tvlabel,DIM},
+    {cancel_icon(c),0,0,"Close",DIM}};
+   legend(chips,4);
+  }
+  return;
+ }
  banner(c);
 
  /* hero card: the active device and its controls */
@@ -406,12 +451,7 @@ static void draw_home(const struct ui_ctx*c){
  rrect(728,300,1096,584,24,CARD);
  text(F_NAME,760,358,"Your headphones",TEXT);
  if(state.scanning){spinner(1764,350,12,STEEL,t,8,3);text_r(F_SMALL,1740,359,"Scanning",STEEL);}
- int rx=744,rw=1064;
- if(n==0){
-  icon_c(I_HERO,1276,520,LINE,255);
-  text_c(F_NAME,1276,610,"No headphones yet",DIM,900);
-  text_c(F_SMALL,1276,648,"Choose Add headphones below to pair your first device.",FAINT,900);
- }
+ int rx=744,rw=1064;    /* n>=1 here: the empty case is handled by draw_home_empty */
  for(int row=0;row<4;row++){
   int i=c->top+row;if(i>=n)break;
   device_row(c,i,rx,384+row*80,rw,c->focus==i);

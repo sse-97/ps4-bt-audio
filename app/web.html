@@ -95,6 +95,10 @@ dl{display:grid;grid-template-columns:1fr auto;gap:6px 14px;margin:12px 0 0;font
 dt{color:var(--muted)}
 dd{margin:0;font-variant-numeric:tabular-nums;text-align:right}
 details>summary{cursor:pointer;color:var(--muted);font-size:14px;font-weight:600;padding:6px 0;list-style:none}
+/* Settings fold: a collapsed card by default, so the primary journey leads and
+   the occasional controls (TV, stereo, latency) get their own room when wanted. */
+.fold>summary{color:var(--ink);font-size:16px;font-weight:600;letter-spacing:.01em;padding:2px 0}
+.fold[open]>summary{margin-bottom:4px}
 details>summary::-webkit-details-marker{display:none}
 details>summary::after{content:" ›";transform:rotate(90deg);display:inline-block;margin-left:4px}
 details[open]>summary::after{transform:rotate(-90deg)}
@@ -158,16 +162,14 @@ footer{color:var(--muted);font-size:13px;line-height:1.7;margin:24px 2px 2px;pad
   </div>
  </section>
 
- <section class="card">
-  <div class="row"><div><h2>TV sound</h2><p class="sub" id="tv">Reading…</p></div>
+ <details class="card fold" id="settings">
+  <summary>Settings</summary>
+  <div class="row" style="margin-top:16px"><div><h2>TV sound</h2><p class="sub" id="tv">Reading…</p></div>
    <button class="inline" id="tv-btn" aria-pressed="false">Toggle</button></div>
   <div class="row" style="margin-top:16px"><div><h2>High-compatibility stereo</h2><p class="sub" id="joint">Reading…</p></div>
    <button class="inline" id="joint-btn" aria-pressed="false">Toggle</button></div>
   <p class="sub">On by default; turn off only if a device stays silent. Saved per device.</p>
- </section>
-
- <section class="card">
-  <h2>Latency</h2>
+  <h2 style="margin-top:20px">Latency</h2>
   <p class="sub" id="latency">Reading…</p>
   <div class="seg" role="group" aria-label="Latency mode">
    <button id="lat0" data-lat="0">Lowest</button>
@@ -175,7 +177,7 @@ footer{color:var(--muted);font-size:13px;line-height:1.7;margin:24px 2px 2px;pad
    <button id="lat2" data-lat="2">Most stable</button>
   </div>
   <p class="sub">Lowest is snappiest; Most stable rides out Wi-Fi and game loads. Balanced by default.</p>
- </section>
+ </details>
 
  <section class="card">
   <details id="diag">
