@@ -39,21 +39,33 @@ struct ui_ctx {
     int digit;          /* selected PIN digit */
 };
 
-#define BG_TOP 0x0e1624
-#define BG_BOT 0x090e17
-#define CARD   0x141e2d
-#define CARD2  0x1a2639
-#define CARDF  0x253850
-#define LINE   0x26364b
-#define TEXT   0xf1f5fb
-#define DIM    0xaab8cc
-#define FAINT  0x6c7d94
-#define SUBTLE 0x8393ab
-#define MINT   0x85e4c0
-#define AMBER  0xffc56e
-#define RED    0xff6b7b
-#define BLUE   0x6cb4ff
-#define GREY   0x8795ab
+/* PlayStation design system, translated to a 10-foot console surface.
+ *
+ * The page is a Console-Black "channel": a near-black section gradient for the
+ * canvas, dark elevated panels for content, and a PlayStation-blue anchored bar
+ * along the bottom (the web footer's cobalt anchor). PlayStation Blue is the
+ * resting accent; Cyan is reserved strictly for focus (see focus_panel) and
+ * never appears at rest. There is no green and no warm colour in the chrome:
+ * working/active states read blue, problems read red.
+ */
+#define BG_TOP 0x101217          /* dark section gradient, near-black */
+#define BG_BOT 0x000000          /* console black */
+#define CARD   0x12151d          /* content panel on black */
+#define CARD2  0x191e29          /* inner row / inlay surface */
+#define FOOTER 0x071a30          /* blue-anchored bottom bar (cobalt, dimmed) */
+#define LINE   0x242b38
+#define TEXT   0xffffff          /* inverse white on dark */
+#define DIM    0xbac3d1          /* secondary text */
+#define FAINT  0x7a8698          /* tertiary text / metadata */
+#define SUBTLE 0x9aa6b7
+#define PSBLUE 0x0070cc          /* PlayStation Blue — brand anchor, resting accent */
+#define PSBLUEH 0x38a0ff         /* brightened blue for presence on dark (active, meters) */
+#define PSCYAN 0x1eaedb          /* interaction colour — focus only, never at rest */
+#define STEEL  0x8fb6e6          /* soft blue for in-progress (connecting/searching) */
+#define RED    0xff5d6c          /* warning red, lightened for dark surfaces */
+#define GREY   0x8795ab          /* neutral: idle / unknown */
+/* The physical DualShock face-button glyphs keep their iconic colours — ✕ blue,
+ * ○ red, □ pink, △ green — so the on-screen prompts match the pad in hand. */
 #define BTN_X  0x7ba7ff
 #define BTN_SQ 0xff9ad5
 #define BTN_TRI 0x5fe0a4
@@ -125,6 +137,21 @@ static void dim_frame(unsigned a){
  unsigned ia=255-a;
  for(int i=0;i<WIDTH*HEIGHT;i++){uint32_t v=back[i];back[i]=0xff000000u|((((v>>16)&255)*ia+127)/255<<16)|((((v>>8)&255)*ia+127)/255<<8)|(((v&255)*ia+127)/255);}
 }
+/* The PlayStation focus signature, translated from web hover to d-pad focus: an
+ * element at rest is a dark panel; focused, it "powers on" with a 2px blue outer
+ * ring, a 2px white border, a cyan-lit fill, and a small lift (drawn 4px larger
+ * on every side). Nested filled rrects stand in for the ring/border strokes. The
+ * fill stays dark-enough that white body text keeps its couch-distance contrast,
+ * so the cyan reads as an edge-lit glow rather than a flat wash behind the text.
+ * Returns the fill colour so callers can tint sub-elements against it. */
+static uint32_t focus_panel(int x,int y,int w,int h,int r,int sel,uint32_t base){
+ if(!sel){rrect(x,y,w,h,r,base);return base;}
+ rrect(x-4,y-4,w+8,h+8,r+4,PSBLUE);      /* blue outer ring + lift */
+ rrect(x-2,y-2,w+4,h+4,r+2,0xffffff);    /* white border */
+ uint32_t f=mixc(base,PSCYAN,44);         /* cyan-lit fill */
+ rrect(x,y,w,h,r,f);
+ return f;
+}
 
 /* ---- text: proportional anti-aliased glyphs, 1/16 px advances ---- */
 static int gl_index(unsigned char c){return(c<32||c>126)?63-32:c-32;}
@@ -194,7 +221,7 @@ static int ui_link(const struct ui_ctx*c){
  return state.link>=LINK_IDLE&&state.link<=LINK_SEARCHING?state.link:LINK_IDLE;
 }
 static uint32_t link_color(int l){
- switch(l){case LINK_STREAMING:return MINT;case LINK_CONNECTING:return AMBER;case LINK_SEARCHING:return BLUE;
+ switch(l){case LINK_STREAMING:return PSBLUEH;case LINK_CONNECTING:return STEEL;case LINK_SEARCHING:return STEEL;
   case LINK_LOST:case LINK_FAILED:case LINK_OFFLINE:return RED;default:return GREY;}
 }
 static int secs(int ms){return(ms+999)/1000;}
@@ -246,9 +273,9 @@ static void header(const struct ui_ctx*c,const char*subtitle){
  if(state.lan&&state.pair_code[0]){
   char label[32];snprintf(label,sizeof(label),"Phone code %s",state.pair_code);
   int cw=text_w(F_SMALLB,label)+34+30+16,cxp=px-20-cw;
-  rrect(cxp,56,cw,56,28,mixc(CARD,BLUE,22));
-  icon_c(I_PHONE,cxp+32,84,BLUE,255);
-  text(F_SMALLB,cxp+54,94,label,mixc(TEXT,BLUE,70));
+  rrect(cxp,56,cw,56,28,mixc(CARD,PSBLUE,26));
+  icon_c(I_PHONE,cxp+32,84,STEEL,255);
+  text(F_SMALLB,cxp+54,94,label,mixc(TEXT,STEEL,60));
  }
 }
 
@@ -257,14 +284,14 @@ static void banner(const struct ui_ctx*c){
  int l=ui_link(c);uint32_t col=link_color(l);uint64_t t=g_now/1000;
  int retry=state.retry_ms,quiet=state.quiet_ms;
  const char*msg=state.message;char full[TBUF],b1[TBUF],b2[TBUF];
- int has=1;uint32_t bc=AMBER;int spin=0;const char*btext=0;
- if(notice[0]&&g_now<notice_until){bc=AMBER;btext=notice;}
+ int has=1;uint32_t bc=STEEL;int spin=0;const char*btext=0;
+ if(notice[0]&&g_now<notice_until){bc=STEEL;btext=notice;}
  else if(l==LINK_OFFLINE){bc=RED;btext="The audio service isn't running. Press the confirm button to start it, or jailbreak again with GoldHEN's BinLoader enabled.";}
  else if(l==LINK_LOST||l==LINK_FAILED){bc=RED;
   if(retry>0)snprintf(full,sizeof(full),"%s Next try in %ds.",msg,secs(retry));else snprintf(full,sizeof(full),"%s",msg);btext=full;}
- else if(l==LINK_CONNECTING){bc=AMBER;spin=1;btext=msg;}
- else if(l==LINK_SEARCHING){bc=BLUE;spin=1;btext=msg;}
- else if(l==LINK_STREAMING&&quiet>4000){bc=AMBER;btext="Connected, waiting for sound from the PS4. Play something or press Options to test.";}
+ else if(l==LINK_CONNECTING){bc=STEEL;spin=1;btext=msg;}
+ else if(l==LINK_SEARCHING){bc=STEEL;spin=1;btext=msg;}
+ else if(l==LINK_STREAMING&&quiet>4000){bc=STEEL;btext="Connected, waiting for sound from the PS4. Play something or press Options to test.";}
  else has=0;
  if(has){
   rrect(MARGIN,176,1728,100,20,mixc(CARD,bc,30));rrect(MARGIN,176,8,100,4,bc);
@@ -303,10 +330,9 @@ static void device_row(const struct ui_ctx*c,int i,int x,int y,int w,int sel){
  int l=ui_link(c);uint32_t col=link_color(l);char buf[TBUF];
  const struct ui_device*d=&state.devices[i];
  int is_t=d->address==state.selected&&l!=LINK_IDLE&&l!=LINK_OFFLINE;
- rrect(x,y,w,72,16,sel?CARDF:CARD2);
- if(sel)rrect(x,y+14,6,44,3,MINT);
+ uint32_t rf=focus_panel(x,y,w,72,16,sel,CARD2);
  uint32_t ic=is_t?col:FAINT;
- disc(x+48,y+36,26,mixc(sel?CARDF:CARD2,ic,40),255);
+ disc(x+48,y+36,26,mixc(rf,ic,40),255);
  icon_c(I_ROWHP,x+48,y+36,is_t?mixc(TEXT,ic,60):DIM,255);
  char sub[80];sub[0]=0;uint32_t subc=FAINT;
  if(is_t){
@@ -369,17 +395,17 @@ static void draw_home(const struct ui_ctx*c){
  else if(l==LINK_IDLE)snprintf(detail,sizeof(detail),"Pick headphones on the right");
  if(detail[0])text_c(F_SMALL,cx,680,detail,FAINT,540);
  if(l==LINK_STREAMING){
-  rrect(cx-150,712,300,10,5,LINE);int fw=300*meter_s/100;if(fw>=10)rrect(cx-150,712,fw,10,5,MINT);
+  rrect(cx-150,712,300,10,5,LINE);int fw=300*meter_s/100;if(fw>=10)rrect(cx-150,712,fw,10,5,PSBLUEH);
  }
  icon_c(I_SPEAKER,154,812,DIM,255);
- rrect(190,807,372,10,5,LINE);int vw=372*state.volume/100;if(vw>=10)rrect(190,807,vw,10,5,MINT);
+ rrect(190,807,372,10,5,LINE);int vw=372*state.volume/100;if(vw>=10)rrect(190,807,vw,10,5,PSBLUEH);
  disc(190+vw,812,11,TEXT,255);
  snprintf(buf,sizeof(buf),"%d%%",state.volume);text_r(F_BODY,656,820,buf,TEXT);
 
  /* device list card with Add / Fix actions pinned at the bottom */
  rrect(728,300,1096,584,24,CARD);
  text(F_NAME,760,358,"Your headphones",TEXT);
- if(state.scanning){spinner(1764,350,12,BLUE,t,8,3);text_r(F_SMALL,1740,359,"Scanning",BLUE);}
+ if(state.scanning){spinner(1764,350,12,STEEL,t,8,3);text_r(F_SMALL,1740,359,"Scanning",STEEL);}
  int rx=744,rw=1064;
  if(n==0){
   icon_c(I_HERO,1276,520,LINE,255);
@@ -395,10 +421,9 @@ static void draw_home(const struct ui_ctx*c){
  struct{int icon;const char*label,*sub;}acts[2]={{I_ADD,"Add headphones","Pair a new device, with tips"},{I_WRENCH,"Fix a problem","No sound, stutter, not listed"}};
  for(int a=0;a<2;a++){
   int y=724+a*80,sel=c->focus==n+a;
-  rrect(rx,y,rw,72,16,sel?CARDF:CARD2);
-  if(sel)rrect(rx,y+14,6,44,3,MINT);
-  disc(rx+48,y+36,26,mixc(sel?CARDF:CARD2,MINT,30),255);
-  icon_c(acts[a].icon,rx+48,y+36,MINT,255);
+  uint32_t rf=focus_panel(rx,y,rw,72,16,sel,CARD2);
+  disc(rx+48,y+36,26,mixc(rf,PSBLUE,34),255);
+  icon_c(acts[a].icon,rx+48,y+36,sel?TEXT:PSBLUEH,255);
   text(F_NAME,rx+88,y+32,acts[a].label,TEXT);
   text(F_SMALL,rx+88,y+58,acts[a].sub,FAINT);
   if(sel&&c->online){int cw=text_w(F_SMALLB,"Open");icon_c(confirm_icon(c),rx+rw-24-cw-26,y+36,btn_glyph_color(confirm_icon(c)),255);text_r(F_SMALLB,rx+rw-24,y+45,"Open",TEXT);}
@@ -431,14 +456,13 @@ static void draw_add(const struct ui_ctx*c){
   int cw=536,gap=60;
   for(int i=0;i<3;i++){
    int x=MARGIN+i*(cw+gap),sel=c->focus==i;
-   rrect(x,300,cw,330,24,sel?CARDF:CARD);
-   if(sel)rrect(x,300,cw,6,3,MINT);
-   icon_c(TYPES[i].icon,x+cw/2,440,sel?MINT:DIM,255);
+   focus_panel(x,300,cw,330,24,sel,CARD);
+   icon_c(TYPES[i].icon,x+cw/2,440,sel?TEXT:DIM,255);
    text_c(F_NAME,x+cw/2,560,TYPES[i].name,TEXT,cw-48);
    text_c(F_SMALL,x+cw/2,598,TYPES[i].note,FAINT,cw-48);
   }
-  rrect(MARGIN,666,1728,150,20,CARD2);rrect(MARGIN,666,6,150,3,BLUE);
-  text(F_SMALLB,146,712,"Pairing tip",BLUE);
+  rrect(MARGIN,666,1728,150,20,CARD2);rrect(MARGIN,666,6,150,3,PSBLUE);
+  text(F_SMALLB,146,712,"Pairing tip",PSBLUEH);
   int nl=wrap2(F_BODY,TYPES[c->focus%3].tip,1728-100,b1,b2);
   if(nl==1)text(F_BODY,146,756,b1,TEXT);else{text(F_BODY,146,748,b1,TEXT);text(F_BODY,146,786,b2,TEXT);}
   struct chip chips[2]={{confirm_icon(c),0,0,"Start pairing",DIM},{cancel_icon(c),0,0,"Back",DIM}};
@@ -447,14 +471,14 @@ static void draw_add(const struct ui_ctx*c){
  }
  if(c->add_step==ADD_SCAN){
   /* chosen type's tip + live scan status across the top */
-  rrect(MARGIN,224,1728,96,20,mixc(CARD,BLUE,20));rrect(MARGIN,224,8,96,4,BLUE);
-  if(state.scanning||l==LINK_SEARCHING)spinner(146,272,18,BLUE,t,8,4);else icon_c(TYPES[c->add_type%3].icon,146,272,BLUE,255);
-  text(F_SMALLB,192,258,state.scanning?"Searching for your device...":"Devices found",BLUE);
+  rrect(MARGIN,224,1728,96,20,mixc(CARD,PSBLUE,20));rrect(MARGIN,224,8,96,4,PSBLUE);
+  if(state.scanning||l==LINK_SEARCHING)spinner(146,272,18,STEEL,t,8,4);else icon_c(TYPES[c->add_type%3].icon,146,272,STEEL,255);
+  text(F_SMALLB,192,258,state.scanning?"Searching for your device...":"Devices found",PSBLUEH);
   wrap2(F_SMALL,TYPES[c->add_type%3].tip,1728-130-40,b1,b2);text(F_SMALL,192,292,b1,DIM);
   rrect(MARGIN,340,1728,544,24,CARD);
   int n=state.count,rx=MARGIN+16,rw=1728-32;
   if(n==0){
-   if(state.scanning||l==LINK_SEARCHING)spinner(960,560,26,BLUE,t,10,6);else icon_c(I_HERO,960,540,LINE,255);
+   if(state.scanning||l==LINK_SEARCHING)spinner(960,560,26,STEEL,t,10,6);else icon_c(I_HERO,960,540,LINE,255);
    text_c(F_NAME,960,640,state.scanning?"Looking for devices...":"No devices found yet",DIM,1200);
    text_c(F_SMALL,960,680,"Keep the device in pairing mode. Press Triangle to scan again.",FAINT,1200);
   }
@@ -464,7 +488,7 @@ static void draw_add(const struct ui_ctx*c){
   return;
  }
  /* ADD_TEST: confirm the user can hear the tone */
- int cx=960,cy=470;uint32_t tc=l==LINK_STREAMING?MINT:AMBER;
+ int cx=960,cy=470;uint32_t tc=l==LINK_STREAMING?PSBLUEH:STEEL;
  icon_c(I_GLOW,cx,cy,tc,90);
  disc(cx,cy,96,tc,255);disc(cx,cy,92,mixc(CARD,tc,52),255);
  icon_c(I_SPEAKER,cx,cy,TEXT,255);
@@ -505,10 +529,9 @@ static void draw_fix(const struct ui_ctx*c){
  text(F_BODY,MARGIN,240,"Pick what's happening. Each one has a single step to try.",DIM);
  for(int i=0;i<4;i++){
   int y=300+i*92,sel=c->focus==i;
-  rrect(MARGIN,y,1728,80,16,sel?CARDF:CARD);
-  if(sel)rrect(MARGIN,y+16,6,48,3,MINT);
-  disc(MARGIN+48,y+40,28,mixc(sel?CARDF:CARD,MINT,26),255);
-  icon_c(PROBLEMS[i].icon,MARGIN+48,y+40,MINT,255);
+  uint32_t rf=focus_panel(MARGIN,y,1728,80,16,sel,CARD);
+  disc(MARGIN+48,y+40,28,mixc(rf,PSBLUE,30),255);
+  icon_c(PROBLEMS[i].icon,MARGIN+48,y+40,sel?TEXT:PSBLUEH,255);
   text(F_NAME,MARGIN+92,y+36,PROBLEMS[i].title,TEXT);
   text(F_SMALL,MARGIN+92,y+62,fix_sub(i),FAINT);
   const char*act=fix_action(i);int cw=text_w(F_SMALLB,act);
@@ -518,7 +541,7 @@ static void draw_fix(const struct ui_ctx*c){
  /* guidance for the focused problem, plus the service's own last words */
  int fi=c->focus%4;char b1[TBUF],b2[TBUF];
  rrect(MARGIN,684,1728,200,20,CARD2);
- text(F_SMALLB,MARGIN+40,728,PROBLEMS[fi].title,MINT);
+ text(F_SMALLB,MARGIN+40,728,PROBLEMS[fi].title,PSBLUEH);
  int nl=wrap2(F_BODY,PROBLEMS[fi].help,1728-80,b1,b2);
  text(F_BODY,MARGIN+40,772,b1,TEXT);if(nl>1)text(F_BODY,MARGIN+40,810,b2,TEXT);
  char last[TBUF];
@@ -533,11 +556,11 @@ static void draw_fix(const struct ui_ctx*c){
 /* ---- PIN overlay (modal over any screen) ---- */
 static void draw_pin(const struct ui_ctx*c){
  dim_frame(150);
- rrect(540,330,840,420,24,0x1b2a40);rrect(540,330,840,6,3,MINT);
+ rrect(540,330,840,420,24,0x101826);rrect(540,330,840,6,3,PSBLUE);
  text_c(F_TITLE,960,416,"Pairing PIN",TEXT,780);
  text_c(F_BODY,960,464,"These headphones ask for a PIN. Try 0000 or 1234.",DIM,780);
  for(int i=0;i<4;i++){
-  int bx=732+i*120;rrect(bx,504,96,104,16,i==c->digit?MINT:CARD2);
+  int bx=732+i*120;rrect(bx,504,96,104,16,i==c->digit?PSCYAN:CARD2);
   char tch[2]={c->pin[i],0};text_c(F_TITLE,bx+48,578,tch,i==c->digit?BG_TOP:TEXT,80);
  }
  text_c(F_SMALL,960,676,"Left/Right pick a digit      Up/Down change it",FAINT,790);
@@ -549,6 +572,9 @@ static void draw_pin(const struct ui_ctx*c){
 static const char*SUBTITLES[3]={"PS4 game audio on your wireless headphones","Add headphones","Fix a problem"};
 static void draw(const struct ui_ctx*c){
  clip(0,0,WIDTH,HEIGHT);gradient(BG_TOP,BG_BOT);
+ /* PlayStation three-surface channel: the button-legend sits on a cobalt bar
+  * along the bottom, the console translation of the site's deep-blue footer. */
+ fill(0,920,WIDTH,HEIGHT-920,FOOTER);fill(0,920,WIDTH,2,PSBLUE);
  int sc=c->screen;if(sc<0||sc>2)sc=0;
  header(c,SUBTITLES[sc]);
  if(sc==SCREEN_ADD)draw_add(c);

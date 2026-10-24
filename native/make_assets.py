@@ -23,16 +23,24 @@ FONT_SEMI = 'DejaVuSans-Bold.ttf'
 # name, file, pixel size. Sizes are native (nothing is ever pixel-doubled) and
 # tuned for a 1920x1080 TV: body text is 30 px, well above the 28 px floor for
 # comfortable reading at couch distance.
+#
+# Weight follows the PlayStation "quiet authority" voice: display headlines
+# (TITLE, NAME) use the regular weight so large type recedes and the content
+# leads; the bold weight is kept for the UI layer only (buttons, tags, pills via
+# SMALLB). SST is Sony-proprietary, so DejaVu Sans stands in as the sans fallback
+# the design system itself names.
 FACES = [
-    ('TITLE', FONT_SEMI, 58),
-    ('NAME', FONT_SEMI, 38),
+    ('TITLE', FONT_REG, 58),
+    ('NAME', FONT_REG, 38),
     ('BODY', FONT_REG, 30),
     ('SMALL', FONT_REG, 26),
     ('SMALLB', FONT_SEMI, 26),
 ]
 GAMMA = 0.80  # <1 thickens light-on-dark text slightly so it stays crisp on TVs
 
-MINT = (133, 228, 192, 255)
+# PlayStation Blue (#0070cc), brightened a touch so the app icon's glow reads on
+# the near-black tile; white for the headphones motif.
+PSBLUE = (46, 140, 224, 255)
 WHITE = (240, 246, 252, 255)
 SS = 8  # supersampling for icon masks
 
@@ -311,8 +319,10 @@ def draw_motif(img, cx, cy, scale, head_color, bt_color):
 
 
 def build_icon512():
+    """App tile: a white headphones-and-Bluetooth motif lit by a PlayStation-blue
+    glow on a near-black console tile, framed by a thin blue edge."""
     S = 512 * 3
-    top_c, bot_c = (0x12, 0x1b, 0x2c), (0x20, 0x30, 0x48)
+    top_c, bot_c = (0x0a, 0x12, 0x20), (0x02, 0x06, 0x0e)
     grad = Image.new('RGB', (S, S))
     gd = ImageDraw.Draw(grad)
     for y in range(S):
@@ -320,11 +330,11 @@ def build_icon512():
         gd.line([(0, y), (S, y)], fill=tuple(int(top_c[i] * (1 - t) + bot_c[i] * t) for i in range(3)))
     icon = grad.convert('RGBA')
     glow = Image.new('RGBA', (S, S), (0, 0, 0, 0))
-    ImageDraw.Draw(glow).ellipse((S * 0.26, S * 0.20, S * 0.74, S * 0.66), fill=(133, 228, 192, 70))
+    ImageDraw.Draw(glow).ellipse((S * 0.26, S * 0.20, S * 0.74, S * 0.66), fill=(0, 112, 204, 95))
     icon = Image.alpha_composite(icon, glow.filter(ImageFilter.GaussianBlur(S * 0.035)))
-    draw_motif(icon, S * 0.5, S * 0.46, S * 0.33, MINT, WHITE)
+    draw_motif(icon, S * 0.5, S * 0.46, S * 0.33, WHITE, PSBLUE)
     ImageDraw.Draw(icon).rounded_rectangle((int(S * 0.045), int(S * 0.045), int(S * 0.955), int(S * 0.955)),
-                                           radius=int(S * 0.11), outline=(133, 228, 192, 60), width=max(1, int(S * 0.006)))
+                                           radius=int(S * 0.11), outline=(0, 112, 204, 90), width=max(1, int(S * 0.006)))
     return icon.resize((512, 512), Image.LANCZOS).convert('RGB')
 
 
