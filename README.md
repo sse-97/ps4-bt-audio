@@ -11,31 +11,38 @@ not work. Output only: no microphone or chat input.
 > console you own. Other firmware versions are unsupported: the payload checks kernel
 > instruction fingerprints before patching and refuses to run if they don't match.
 
-## What's new in 2.7.5
+## What's new in 2.8.0
 
-- **Joint stereo by default.** Audio is sent as standard joint-stereo SBC, the format
-  headphones agree to when they connect. The old format (dual channel) made the PS4
-  renegotiate the stream with the headphones, and some models stayed connected but silent.
-  You can turn joint stereo off per headphone on the web page if a model needs the old format.
-- **Automatic recovery with format fallback.** If a headset connects but stays silent, the
-  service switches the SBC format for you (the step that used to need a manual reconnect)
-  before dropping and re-establishing the link. Reconnect attempts back off 2, 4, 8 then 16
-  seconds; after that it stops and asks you to power-cycle the headphones.
-- **Remembered devices.** The service keeps a profile per headphone — the format that last
-  produced sound, when it last connected — and remembers several. On startup it reconnects
-  to whichever remembered device is turned on, and starts it in the format that worked last.
-- **Explicit connection states.** The link moves through named states (discovering, pairing,
-  connecting, configuring, streaming, recovering), each with its own timeout; the current
-  one is reported as `state` in `GET /api/status`.
-- **Rest-mode resume.** After the console wakes from rest mode the service re-establishes the
-  driver and reconnects on its own.
-- **Disconnect really disconnects.** The Disconnect button (web page, or Triangle in the
-  app) drops the Bluetooth link itself, so the next connect starts fresh.
-- **Steadier sending.** Audio goes out from its own thread with the same scheduling the
-  PS4's audio service uses for its Bluetooth senders (real-time priority, cores 6–7).
-- **Test tone follows the volume slider.**
-- **Timing diagnostics.** `GET /api/timing` returns per-second packet timing (sent, refused,
-  late, longest gap) for the last two minutes.
+2.8.0 is a ground-up rework of the 2.7.5 prototype: the same audio path, rebuilt for
+stability, security and ease of use, with a reproducible Linux build and host tests.
+
+- **Reliable, self-healing connections.** The link runs through named states (discovering,
+  pairing, connecting, configuring, streaming, recovering), each with its own timeout.
+  Reconnects back off 2, 4, 8 then 16 seconds and then stop and ask you to power-cycle the
+  headphones. A headset that connects but stays silent auto-switches SBC format and, if that
+  fails, re-establishes the link — the step that used to need a manual reconnect. After a
+  rest-mode wake the service re-opens the driver and reconnects on its own.
+- **Remembered devices.** The service keeps a profile per headphone — the SBC format that
+  last produced sound and when it last connected — and remembers several. On startup it
+  reconnects to whichever remembered device is turned on, in the format that worked last.
+- **Bounded latency with modes.** Audio is paced from a clock, one ~4 ms packet at a time,
+  holding a shallow buffer (12–20 ms) instead of letting up to ~128 ms pile up. Pick Lowest,
+  Balanced or Most stable on the web page or the app.
+- **Secured control API with phone control.** The console app always has full access over
+  loopback; any phone or PC on the LAN can read and change **nothing** until you turn phone
+  control on at the console and enter the six-digit code shown on the TV. See
+  [`docs/API.md`](docs/API.md).
+- **Redesigned 1080p TV app** with guided *Add headphones* and *Fix a problem* flows,
+  region-correct confirm/cancel buttons, and a live output meter. It talks to the service
+  only through the JSON control API.
+- **Rebuilt phone companion page** — mobile-first, accessible, one contextual primary action
+  — served from the console on port 8097.
+- **Joint stereo by default** (the format headphones agree to at connect), with a per-device
+  toggle for the few models that need dual channel.
+- **Reproducible Linux build and CI.** The payload and PKG build on Linux in a pinned Docker
+  image, the same way GitHub Actions builds every push; host unit tests and UI scene renders
+  run in CI, and tagged builds publish a GitHub Release with `SHA256SUMS`. No binaries are
+  kept in the repository.
 
 ## Phone control and security
 
@@ -89,12 +96,12 @@ enabled (port 2121) so you can copy files. Use either option below, or both.
 
 ### Option A: home-screen app (PKG)
 
-`Bluetooth-Audio-2.7.5.pkg` from the Releases page installs a **Bluetooth Audio** app (title ID `BTAD00001`) on the
+`Bluetooth-Audio-2.8.0.pkg` from the Releases page installs a **Bluetooth Audio** app (title ID `BTAD00001`) on the
 home screen. It bundles the audio payload: when you open the app and the service isn't
 running, it sends the payload to GoldHEN's BinLoader (port 9090) for you. For the service to
 also start after every jailbreak without opening the app, add the AutoRun entry from Option B.
 
-1. Copy the PKG over FTP to **`/data/pkg/Bluetooth-Audio-2.7.5.pkg`** on the PS4 (create the
+1. Copy the PKG over FTP to **`/data/pkg/Bluetooth-Audio-2.8.0.pkg`** on the PS4 (create the
    `pkg` folder if it doesn't exist).
 2. In GoldHEN's settings menu, open Debug Settings, set the package source to **HDD**, then
    run **Package Installer** and install it. If an older version is installed, delete it from
@@ -119,13 +126,13 @@ to port 9090**: the loader treats any connection as a payload and stops listenin
 reboot and re-jailbreak.
 
 ```powershell
-python tools/deploy_variant.py BTA-Audio-2.7.5.bin --host <PS4_IP> --connect
+python tools/deploy_variant.py BTA-Audio-2.8.0.bin --host <PS4_IP> --connect
 ```
 
 To start it automatically after each jailbreak, install it as a GoldHEN AutoRun payload:
 
 ```powershell
-python tools/install_bta.py --host <PS4_IP> --payload BTA-Audio-2.7.5.bin
+python tools/install_bta.py --host <PS4_IP> --payload BTA-Audio-2.8.0.bin
 python tools/install_bta.py --host <PS4_IP> --disable-autorun   # undo
 ```
 
@@ -133,11 +140,12 @@ python tools/install_bta.py --host <PS4_IP> --disable-autorun   # undo
 
 | Path on the PS4 | What it is |
 |---|---|
-| `/data/pkg/Bluetooth-Audio-2.7.5.pkg` | PKG you copy there before installing (Option A) |
+| `/data/pkg/Bluetooth-Audio-2.8.0.pkg` | PKG you copy there before installing (Option A) |
 | `/data/payloads/BTA-Audio.bin` | Boot payload written by `install_bta.py` (Option B) |
 | `/data/GoldHEN/payloads.ini` | GoldHEN AutoRun list. The installer adds `/user/data/payloads/BTA-Audio.bin = 1` under `[AutoRun]` and keeps your other entries |
-| `/data/bta_audio/` | Runtime state: saved headphones (`device.bin`), volume, `status.json`, logs |
-| `/data/bta_audio/dual-<address>` | Present only if you turned joint stereo off for that headphone |
+| `/data/bta_audio/` | Runtime state folder, created automatically: remembered headphones, volume, latency mode, `status.json` and logs |
+| `/data/bta_audio/profiles.bin` | Remembered headphones: the SBC format that last produced sound, success/failure counts and last-connected time. Migrated once from the pre-2.8.0 `device.bin` and `dual-<address>` files, which are no longer written |
+| `/data/bta_audio/volume.bin` | Saved headphone volume (0–100) |
 | `/data/bta_audio/latency.bin` | Saved latency mode (0 lowest, 1 balanced, 2 most stable) |
 | `/data/bta_audio/lan_on` | Create this empty file to allow phone control; delete it to lock the API to the console |
 | `/data/bta_audio/pair_code.txt` | The current six-digit pairing code, written while phone control is on |
@@ -145,6 +153,25 @@ python tools/install_bta.py --host <PS4_IP> --disable-autorun   # undo
 | `/user/app/BTAD00001/` | Where the PKG installs the app (managed by the system) |
 
 `install_bta.py` backs up any file it replaces into an `install_backups/` folder on your PC.
+
+### Uninstall
+
+Deleting the app from the home screen leaves the AutoRun entry and the saved settings behind,
+so remove them too for a clean uninstall:
+
+1. **Remove the app (Option A).** On the home screen, highlight **Bluetooth Audio**, press
+   Options and choose **Delete**. Delete `/data/pkg/Bluetooth-Audio-2.8.0.pkg` over FTP if you
+   left the PKG there.
+2. **Remove the AutoRun entry (Option B).** Run
+   `python tools/install_bta.py --host <PS4_IP> --disable-autorun`. This sets the entry to `0`
+   in `/data/GoldHEN/payloads.ini` and backs the file up; delete `/data/payloads/BTA-Audio.bin`
+   over FTP to remove the boot payload itself.
+3. **Remove the settings.** Delete the `/data/bta_audio/` folder over FTP to clear remembered
+   headphones, volume, latency mode, logs and any phone-control flag. This is optional — the
+   folder is small and is reused if you reinstall.
+
+The acceptance patch lives only in RAM, so a reboot (without re-running the jailbreak) already
+removes it; nothing in system firmware is modified.
 
 ### Using it
 
@@ -183,31 +210,12 @@ The choice is saved in `/data/bta_audio/latency.bin` and survives restarts.
 trims) and `underruns` (slots with no audio ready) counters; `GET /api/timing`
 still reports `maxback_ms` and the late-packet counts per second.
 
-### Verifying on the console
-
 The pacing logic is covered off-console by a producer/consumer simulation in
-`tests/test_pacing.c` (run with `make test`), which proves the audio handed to
-the driver is never more than one target-plus-a-packet old, even across a stall.
-The one console check that the host tests cannot make is how the real Bluetooth
-driver and headphones behave. On the test console, confirm:
-
-1. **Backlog stays shallow.** `maxback_ms` at `/api/timing` (the audio actually
-   held, after any trim) stays at or below the mode's ceiling (12/16/20 ms)
-   throughout an hour of play; it does not creep toward the old ~128 ms.
-2. **No creeping delay.** Audio stays in sync through several game loads and a
-   rest-mode sleep/wake cycle. A game load or menu may log one `resyncs` or a few
-   `drops` as the backlog is trimmed back to target, but these stay occasional,
-   not continuous, and `underruns` stays near zero.
-3. **Lower latency is audible.** Switching to Lowest noticeably tightens
-   lip-sync versus Most stable; Most stable has fewer dropouts on busy Wi-Fi.
-4. **No new dropouts or controller lag.** One hour on two headsets with one and
-   two controllers has no audible dropouts (`underruns` near zero) and no
-   controller stutter — the sender still never polls the driver while streaming.
-5. **SBC bitpool (open question).** The driver encodes SBC itself and exposes
-   only joint-stereo vs. dual-channel (the existing Joint stereo toggle); whether
-   the bitpool can be set from the service is still unverified. If a lower-bitpool
-   "stable" or higher-bitpool "high quality" mode is wanted later, that is the
-   console investigation to do first.
+`tests/test_pacing.c` (run with `make test`), which proves the audio handed to the driver is
+never more than one target-plus-a-packet old, even across a stall. How the real Bluetooth
+driver and headphones behave is the one thing the host tests cannot check: the full set of
+console checks for every feature is in
+[`docs/ON_CONSOLE_TESTING.md`](docs/ON_CONSOLE_TESTING.md).
 
 ## Build from source
 
@@ -221,8 +229,10 @@ scripts/docker-build.sh payload    # only build/BTA-Audio.bin
 
 The image (`docker/Dockerfile`) pins Ubuntu 24.04 with clang/lld 18.1.3, the
 [OpenOrbis toolchain](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain) (v0.5.4), OpenSSL 1.1
-for PkgTool, and exact Python package versions for the asset generator. With that compiler the
-2.7.5 payload rebuilds byte for byte (sha256 `7db52b84…b337b3`).
+for PkgTool, and exact Python package versions for the asset generator. The build is
+deterministic: with that pinned toolchain `make dist` reproduces the payload and PKG byte for
+byte, and every release publishes the resulting `SHA256SUMS` so you can verify a download
+against the build (each push also prints the checksums in the Actions log).
 
 Without Docker, run `make` directly. The payload needs only `clang` and `ld.lld`; the PKG also
 needs `OO_PS4_TOOLCHAIN` pointing at the OpenOrbis toolchain folder, Python with Pillow and
@@ -238,8 +248,9 @@ make host-ui      # build/host_ui: renders a UI scene file to a PPM on the PC
 ### Releasing
 
 Bump `VERSION` together with the version strings in `app/web.html`, `app/worker.c` and
-`native/main.c` (CI fails if they disagree), then push a tag such as `v2.7.6`. CI builds it and
-creates a draft GitHub Release with the PKG, the payload and `SHA256SUMS`.
+`native/main.c` (CI fails if they disagree), then push a tag such as `v2.8.1` (the tag must be
+`v` + `VERSION`). CI builds it and creates a draft GitHub Release with the PKG, the payload and
+`SHA256SUMS`, which you review and publish.
 
 ### Windows (legacy)
 
