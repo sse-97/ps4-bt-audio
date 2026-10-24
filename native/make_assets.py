@@ -1,8 +1,8 @@
-"""Generate the native app's artwork: smooth UI fonts, icons, logo tile, app icon.
+"""Generate the native app's artwork: smooth UI fonts, icons, app icon.
 
 Outputs (under build/native, the native build's -I include dir):
   ui_font.h  - anti-aliased glyph bitmaps at several native pixel sizes
-  ui_icons.h - 8-bit alpha masks (tinted at runtime) + the logo tile (ARGB)
+  ui_icons.h - 8-bit alpha masks, tinted at runtime
   icon0.png  - 512x512 PS4 home-screen icon
 
 The same data is exposed through build_data() so the PC previewer renders
@@ -21,22 +21,18 @@ FONT_REG = 'DejaVuSans.ttf'
 FONT_SEMI = 'DejaVuSans-Bold.ttf'
 
 # name, file, pixel size. Sizes are native (nothing is ever pixel-doubled) and
-# tuned for a 1920x1080 TV: body text is 30 px, well above the 28 px floor for
-# comfortable reading at couch distance.
-#
-# Weight follows the PlayStation "quiet authority" voice: display headlines
-# (TITLE, NAME) use the regular weight so large type recedes and the content
-# leads; the bold weight is kept for the UI layer only (buttons, tags, pills via
-# SMALLB). SST is Sony-proprietary, so DejaVu Sans stands in as the sans fallback
-# the design system itself names.
+# follow the PS4 Settings screens at 1080p: a large light title, list rows a
+# little under 30 px, values and button labels a step smaller. The PS4's own
+# typeface (SST) is Sony-proprietary, so DejaVu Sans stands in; it has no light
+# weight, so the title uses the regular one. The bold face is only for the tiny
+# OPTIONS button tag.
 FACES = [
-    ('TITLE', FONT_REG, 58),
-    ('NAME', FONT_REG, 38),
-    ('BODY', FONT_REG, 30),
-    ('SMALL', FONT_REG, 26),
-    ('SMALLB', FONT_SEMI, 26),
+    ('TITLE', FONT_REG, 52),
+    ('ROW', FONT_REG, 29),
+    ('SMALL', FONT_REG, 25),
+    ('TAG', FONT_SEMI, 14),
 ]
-GAMMA = 0.80  # <1 thickens light-on-dark text slightly so it stays crisp on TVs
+GAMMA = 0.85  # <1 thickens light-on-dark text slightly so it stays crisp on TVs
 
 # PlayStation Blue (#0070cc), brightened a touch so the app icon's glow reads on
 # the near-black tile; white for the headphones motif.
@@ -88,7 +84,7 @@ def finish(im, w, h):
 
 
 def draw_headphones(d, cx, cy, s, fill=255):
-    """Band + two earcups; same motif as the app icon, without the rune."""
+    """Band + two earcups; the app icon's motif."""
     band_w = max(2, int(0.17 * s))
     d.arc((cx - 0.74 * s, cy - 0.72 * s, cx + 0.74 * s, cy + 0.40 * s), 180, 360, fill=fill, width=band_w)
     cup_w, cup_h = 0.27 * s, 0.46 * s
@@ -98,17 +94,30 @@ def draw_headphones(d, cx, cy, s, fill=255):
     d.rounded_rectangle((cx + 0.74 * s - cup_w, top, cx + 0.74 * s, top + cup_h), radius=rad, fill=fill)
 
 
-def icon_headphones(size):
+def draw_bt(d, cx, cy, hw, hh, color, width):
+    """The Bluetooth rune as one round-jointed polyline."""
+    unit = [(-1, -0.5), (1, 0.5), (0, 1), (0, -1), (1, -0.5), (-1, 0.5)]
+    pts = [(cx + px * hw, cy + py * hh) for px, py in unit]
+    d.line(pts, fill=color, width=width, joint='curve')
+    r = width / 2
+    for px, py in pts:
+        d.ellipse((px - r, py - r, px + r, py + r), fill=color)
+
+
+def icon_bt(size):
+    """Device rows: the service can't tell headphones from speakers, so every
+    device wears the Bluetooth symbol."""
     im = mask_canvas(size, size)
-    draw_headphones(ImageDraw.Draw(im), size * SS * 0.5, size * SS * 0.50, size * SS * 0.60)
+    S = size * SS
+    draw_bt(ImageDraw.Draw(im), S * 0.5, S * 0.5, 0.21 * S, 0.42 * S, 255, int(0.075 * S))
     return finish(im, size, size)
 
 
-def icon_check(size):
+def icon_check(size, wf=0.075):
     im = mask_canvas(size, size)
     d = ImageDraw.Draw(im)
-    w = int(size * SS * 0.13)
-    pts = [(0.27, 0.53), (0.44, 0.70), (0.75, 0.33)]
+    w = int(size * SS * wf)
+    pts = [(0.19, 0.52), (0.38, 0.71), (0.81, 0.27)]
     pts = [(x * size * SS, y * size * SS) for x, y in pts]
     d.line(pts, fill=255, width=w, joint='curve')
     for x, y in (pts[0], pts[2]):
@@ -116,59 +125,7 @@ def icon_check(size):
     return finish(im, size, size)
 
 
-def icon_bang(size):
-    im = mask_canvas(size, size)
-    d = ImageDraw.Draw(im)
-    S = size * SS
-    w = 0.15 * S
-    d.rounded_rectangle((S / 2 - w / 2, 0.20 * S, S / 2 + w / 2, 0.60 * S), radius=int(w / 2), fill=255)
-    d.ellipse((S / 2 - w / 2, 0.70 * S, S / 2 + w / 2, 0.70 * S + w), fill=255)
-    return finish(im, size, size)
-
-
-def icon_cross_mark(size):
-    im = mask_canvas(size, size)
-    d = ImageDraw.Draw(im)
-    S = size * SS
-    w = int(0.13 * S)
-    for a, b in (((0.28, 0.28), (0.72, 0.72)), ((0.72, 0.28), (0.28, 0.72))):
-        d.line([(a[0] * S, a[1] * S), (b[0] * S, b[1] * S)], fill=255, width=w)
-        for x, y in (a, b):
-            d.ellipse((x * S - w / 2, y * S - w / 2, x * S + w / 2, y * S + w / 2), fill=255)
-    return finish(im, size, size)
-
-
-def icon_speaker(size):
-    im = mask_canvas(size, size)
-    d = ImageDraw.Draw(im)
-    S = size * SS
-    d.polygon([(0.10 * S, 0.38 * S), (0.30 * S, 0.38 * S), (0.52 * S, 0.18 * S), (0.52 * S, 0.82 * S),
-               (0.30 * S, 0.62 * S), (0.10 * S, 0.62 * S)], fill=255)
-    w = int(0.075 * S)
-    d.arc((0.40 * S, 0.30 * S, 0.76 * S, 0.70 * S), -50, 50, fill=255, width=w)
-    d.arc((0.40 * S, 0.14 * S, 0.94 * S, 0.86 * S), -50, 50, fill=255, width=w)
-    return finish(im, size, size)
-
-
-def icon_glow(size):
-    """Soft radial falloff used as a state-coloured halo."""
-    im = Image.new('L', (size, size), 0)
-    px = im.load()
-    c = (size - 1) / 2.0
-    for y in range(size):
-        for x in range(size):
-            r = ((x - c) ** 2 + (y - c) ** 2) ** 0.5 / c
-            if r < 1:
-                t = 1 - r
-                px[x, y] = int(255 * t * t * (3 - 2 * t))
-    return im
-
-
 def btn_cross(size):
-    return icon_cross_mark_thin(size)
-
-
-def icon_cross_mark_thin(size):
     im = mask_canvas(size, size)
     d = ImageDraw.Draw(im)
     S = size * SS
@@ -187,14 +144,6 @@ def btn_circle(size):
     return finish(im, size, size)
 
 
-def btn_square(size):
-    im = mask_canvas(size, size)
-    S = size * SS
-    ImageDraw.Draw(im).rounded_rectangle((0.22 * S, 0.22 * S, 0.78 * S, 0.78 * S), radius=int(0.06 * S),
-                                         outline=255, width=int(0.12 * S))
-    return finish(im, size, size)
-
-
 def btn_triangle(size):
     im = mask_canvas(size, size)
     d = ImageDraw.Draw(im)
@@ -207,18 +156,18 @@ def btn_triangle(size):
     return finish(im, size, size)
 
 
-def icon_plus(size):
+def icon_plus(size, wf=0.10):
     im = mask_canvas(size, size)
     d = ImageDraw.Draw(im)
     S = size * SS
-    w = int(0.15 * S)
+    w = int(wf * S)
     d.rounded_rectangle((0.5 * S - w / 2, 0.24 * S, 0.5 * S + w / 2, 0.76 * S), radius=int(w / 2), fill=255)
     d.rounded_rectangle((0.24 * S, 0.5 * S - w / 2, 0.76 * S, 0.5 * S + w / 2), radius=int(w / 2), fill=255)
     return finish(im, size, size)
 
 
 def icon_wrench(size):
-    """Open-ended spanner: a diagonal handle with a notched head."""
+    """Open-ended spanner, head at the top right like the PS4 Settings glyph."""
     im = mask_canvas(size, size)
     d = ImageDraw.Draw(im)
     S = size * SS
@@ -229,89 +178,37 @@ def icon_wrench(size):
     d.ellipse((hx - hr, hy - hr, hx + hr, hy + hr), fill=255)       # head
     d.ellipse((hx - hr * 0.5, hy - hr * 0.5, hx + hr * 0.5, hy + hr * 0.5), fill=0)  # bolt hole
     d.polygon([(hx, hy), (hx - hr * 1.3, hy - hr * 0.35), (hx - hr * 0.35, hy - hr * 1.3)], fill=0)  # open jaw
-    return finish(im, size, size)
+    return finish(im.transpose(Image.Transpose.FLIP_LEFT_RIGHT), size, size)
 
 
-def icon_phone(size):
+def icon_chevron(size, up):
+    """The arrows above and below the focused PIN digit."""
     im = mask_canvas(size, size)
     d = ImageDraw.Draw(im)
     S = size * SS
-    w = int(0.08 * S)
-    d.rounded_rectangle((0.30 * S, 0.14 * S, 0.70 * S, 0.86 * S), radius=int(0.10 * S), outline=255, width=w)
-    d.line([(0.44 * S, 0.22 * S), (0.56 * S, 0.22 * S)], fill=255, width=int(0.045 * S))  # earpiece
-    d.ellipse((0.47 * S, 0.74 * S, 0.53 * S, 0.80 * S), fill=255)                          # home dot
-    return finish(im, size, size)
-
-
-def icon_earbud(size):
-    """A single stemmed earbud, as a device-type glyph."""
-    im = mask_canvas(size, size)
-    d = ImageDraw.Draw(im)
-    S = size * SS
-    d.ellipse((0.34 * S, 0.14 * S, 0.66 * S, 0.50 * S), fill=255)                       # bud
-    d.rounded_rectangle((0.45 * S, 0.42 * S, 0.57 * S, 0.84 * S), radius=int(0.06 * S), fill=255)  # stem
-    return finish(im, size, size)
-
-
-def icon_speaker_box(size):
-    """A speaker/boombox: woofer + tweeter, as a device-type glyph."""
-    im = mask_canvas(size, size)
-    d = ImageDraw.Draw(im)
-    S = size * SS
-    w = int(0.07 * S)
-    d.rounded_rectangle((0.28 * S, 0.12 * S, 0.72 * S, 0.88 * S), radius=int(0.08 * S), outline=255, width=w)
-    d.ellipse((0.40 * S, 0.50 * S, 0.60 * S, 0.70 * S), outline=255, width=w)           # woofer
-    d.ellipse((0.46 * S, 0.24 * S, 0.54 * S, 0.32 * S), fill=255)                        # tweeter
-    return finish(im, size, size)
-
-
-def icon_gamepad(size):
-    im = mask_canvas(size, size)
-    d = ImageDraw.Draw(im)
-    S = size * SS
-    d.rounded_rectangle((0.12 * S, 0.34 * S, 0.88 * S, 0.66 * S), radius=int(0.15 * S), outline=255, width=int(0.07 * S))
-    dx, dy, a, bw = 0.33 * S, 0.50 * S, 0.06 * S, int(0.05 * S)       # d-pad
-    d.line([(dx - a, dy), (dx + a, dy)], fill=255, width=bw)
-    d.line([(dx, dy - a), (dx, dy + a)], fill=255, width=bw)
-    r = int(0.035 * S)                                                # face buttons
-    for ox, oy in ((-0.055, 0), (0.055, 0), (0, -0.055), (0, 0.055)):
-        cx, cy = 0.67 * S + ox * S, dy + oy * S
-        d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=255)
+    w = int(0.09 * S)
+    ys = (0.66, 0.34) if up else (0.34, 0.66)
+    pts = [(0.18 * S, ys[0] * S), (0.50 * S, ys[1] * S), (0.82 * S, ys[0] * S)]
+    d.line(pts, fill=255, width=w, joint='curve')
+    for x, y in (pts[0], pts[2]):
+        d.ellipse((x - w / 2, y - w / 2, x + w / 2, y + w / 2), fill=255)
     return finish(im, size, size)
 
 
 ICON_SPECS = [
-    ('HERO', lambda: icon_headphones(132)),
-    ('ROWHP', lambda: icon_headphones(44)),
-    ('GLOW', lambda: icon_glow(345)),
-    ('CHECK', lambda: icon_check(38)),
-    ('BANG', lambda: icon_bang(38)),
-    ('XMARK', lambda: icon_cross_mark(38)),
-    ('SPEAKER', lambda: icon_speaker(38)),
-    ('ADD', lambda: icon_plus(44)),
-    ('WRENCH', lambda: icon_wrench(44)),
-    ('PAD', lambda: icon_gamepad(46)),
-    ('PHONE', lambda: icon_phone(40)),
-    ('TYPE_EARBUD', lambda: icon_earbud(84)),
-    ('TYPE_HP', lambda: icon_headphones(84)),
-    ('TYPE_SPK', lambda: icon_speaker_box(84)),
-    ('BCROSS', lambda: btn_cross(32)),
-    ('BCIRCLE', lambda: btn_circle(32)),
-    ('BSQUARE', lambda: btn_square(32)),
-    ('BTRI', lambda: btn_triangle(32)),
+    ('BT', lambda: icon_bt(40)),
+    ('WRENCH', lambda: icon_wrench(26)),
+    ('PLUS', lambda: icon_plus(32)),
+    ('CHECK', lambda: icon_check(32)),
+    ('GX', lambda: btn_cross(19)),
+    ('GO', lambda: btn_circle(20)),
+    ('GT', lambda: btn_triangle(19)),
+    ('CHEV_UP', lambda: icon_chevron(28, True)),
+    ('CHEV_DOWN', lambda: icon_chevron(28, False)),
 ]
 
 
-# --- Shared motif for the app icon / logo tile ---------------------------------
-def draw_bt(d, cx, cy, hw, hh, color, width):
-    unit = [(-1, -0.5), (1, 0.5), (0, 1), (0, -1), (1, -0.5), (-1, 0.5)]
-    pts = [(cx + px * hw, cy + py * hh) for px, py in unit]
-    d.line(pts, fill=color, width=width, joint='curve')
-    r = width / 2
-    for px, py in pts:
-        d.ellipse((px - r, py - r, px + r, py + r), fill=color)
-
-
+# --- App icon -------------------------------------------------------------------
 def draw_motif(img, cx, cy, scale, head_color, bt_color):
     d = ImageDraw.Draw(img)
     draw_headphones(d, cx, cy, scale, fill=head_color)
@@ -338,19 +235,10 @@ def build_icon512():
     return icon.resize((512, 512), Image.LANCZOS).convert('RGB')
 
 
-def build_logo_tile(icon, size=108, radius=24):
-    tile = icon.resize((size, size), Image.LANCZOS).convert('RGBA')
-    m = Image.new('L', (size * SS, size * SS), 0)
-    ImageDraw.Draw(m).rounded_rectangle((0, 0, size * SS - 1, size * SS - 1), radius=radius * SS, fill=255)
-    tile.putalpha(m.resize((size, size), Image.LANCZOS))
-    return tile
-
-
 def build_data():
-    icon = build_icon512()
     faces = {name: build_face(path, size) for name, path, size in FACES}
     icons = {name: fn() for name, fn in ICON_SPECS}
-    return dict(faces=faces, icons=icons, icon512=icon, logo=build_logo_tile(icon))
+    return dict(faces=faces, icons=icons, icon512=build_icon512())
 
 
 # --- C header emission ---------------------------------------------------------
@@ -376,10 +264,6 @@ def write_headers(data):
     lines.append('enum{' + ','.join(f'I_{n}' for n in data['icons']) + ',I_COUNT};')
     lines.append('static const struct icon ICONS[I_COUNT]={' + ','.join(
         '{ia_%s,%d,%d}' % (n, im.width, im.height) for n, im in data['icons'].items()) + '};')
-    logo = data['logo']
-    vals = [(a << 24) | (r << 16) | (g << 8) | b for (r, g, b, a) in logo.getdata()]
-    lines.append(f'#define LOGO_W {logo.width}\n#define LOGO_H {logo.height}')
-    lines.append('static const unsigned int logo_argb[LOGO_W*LOGO_H]={' + ','.join(map(str, vals)) + '};')
     (out / 'ui_icons.h').write_text('\n'.join(lines) + '\n')
     data['icon512'].save(out / 'icon0.png')
 
@@ -390,4 +274,4 @@ if __name__ == '__main__':
     print('Native assets generated:', out)
     for n, _, _ in FACES:
         print('  face', n, len(d['faces'][n]['bits']), 'bytes')
-    print('  icons', len(d['icons']), ' logo', d['logo'].size)
+    print('  icons', len(d['icons']))

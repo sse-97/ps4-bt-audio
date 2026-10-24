@@ -1,0 +1,13 @@
+# Home: reconnects gave up; the service's reason shows above the legend
+screen=0
+online=1
+link=4
+volume=70
+latency_mode=1
+selected=aabbccddeeff
+name=AirPods Pro
+message=The PS4 keeps refusing audio for AirPods Pro. Turn the device off and on.
+dev=AirPods Pro|aabbccddeeff|1
+dev=JBL Flip 6|112233445566|1
+focus=0
+t=700

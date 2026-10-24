@@ -35,15 +35,15 @@ Tick each box. If anything fails, note the `message`, `state` and the relevant c
 - [ ] **Uninstall.** `--disable-autorun` stops the service starting at boot; deleting the app
       and the `/data/bta_audio/` folder leaves nothing behind (see the README Uninstall steps).
 
-## 2. First connection (guided Add headphones flow)
+## 2. First connection (Add Device)
 
-- [ ] **Add flow.** Triangle (or the Home list's **Add headphones**) opens the device-type
-      picker; choosing a type shows its pairing tip, then a live scan listing audio devices
-      newest-first.
+- [ ] **Add flow.** The Home list's **Add Device** opens **Searching...** with a live scan
+      listing audio devices newest-first; Triangle searches again.
 - [ ] **Connect.** Selecting a listed device connects it; `state` moves
       `discovering → connecting → configuring → streaming` and `link` reaches **2 (playing)**.
-- [ ] **Test tone.** The flow auto-plays a test tone on success; you hear it, and the output
-      meter moves. "Can you hear it?" / **Fix a problem** is reachable if not.
+- [ ] **Test tone.** The flow auto-plays a test tone on success and you hear it. The
+      app asks "Can you hear the test tone?": **Yes** returns to Home, **No, Play Again**
+      replays it, **Disconnect** drops the link and returns to Home.
 - [ ] **Region buttons.** On a Japan/Asia console (enter = Circle), Circle confirms and Cross
       cancels; elsewhere Cross confirms. The on-screen legend matches.
 
@@ -53,7 +53,7 @@ Tick each box. If anything fails, note the `message`, `state` and the relevant c
       when it is turned on (no app interaction needed).
 - [ ] **Two remembered devices.** Pair a second headset. With both remembered, turning on
       either one first makes the service connect to that one ("connect to whichever is on").
-- [ ] **Disconnect restores TV.** Disconnect (web, or the Home primary action) drops the link
+- [ ] **Disconnect restores TV.** Disconnect (web, or the app's Options menu) drops the link
       and TV sound returns; the next connect starts fresh.
 - [ ] **Backoff then give up.** With the headphones off, a connect attempt retries at ~2, 4, 8,
       16 s (watch `attempts`/`retry_ms`) and then stops with a "turn them on" message rather
@@ -111,8 +111,13 @@ Tick each box. If anything fails, note the `message`, `state` and the relevant c
 
 ## 8. TV app and diagnostics
 
-- [ ] **Fix a problem.** The screen offers the test tone, the latency-mode cycle and a rescan;
-      each works.
+- [ ] **Settings rows.** Volume changes with left/right; **Keep TV Sound On** and **Allow
+      Phone Control** toggle; **Audio Latency** sets the mode; the Options menu's **Test
+      Sound** plays the tone.
+- [ ] **Stop Audio Service.** It asks first; **Stop** ends the service, the app then shows
+      "The audio service isn't running." and **Start** brings it back while BinLoader is
+      still unused this jailbreak.
+- [ ] **Theme and text.** The screens read clearly on the TV in the app's gray theme.
 - [ ] **Diagnostics.** The web Diagnostics panel and `/api/timing` show live packets, reconnects,
       resyncs, drops/underruns and late-packet counts.
 - [ ] **App is display-only.** Closing the app leaves the service and audio running.

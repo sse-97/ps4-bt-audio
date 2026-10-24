@@ -1,7 +1,8 @@
-# Home: service up, nothing paired yet (focus on Add headphones)
+# Home: service up, no devices yet (focus on Add Device)
 screen=0
 online=1
 link=0
 volume=40
+latency_mode=1
 focus=0
 t=500

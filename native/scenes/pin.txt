@@ -1,11 +1,12 @@
-# PIN entry overlay (headset that asks for a code)
-screen=0
+# Add Device: the PIN dialog for a device that asks for one
+screen=1
 online=1
 link=1
 pin=1
-pin_text=1234
+pin_text=0000
 pin_digit=2
 name=JBL Flip 6
 selected=112233445566
 dev=JBL Flip 6|112233445566|1
+dev=Beats Studio|222233334444|1
 t=600

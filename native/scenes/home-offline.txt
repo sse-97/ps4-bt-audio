@@ -1,5 +1,5 @@
-# Home: audio service not answering
+# Audio service not answering: the Start / Close dialog, while the app starts it
 screen=0
 online=0
-focus=0
+notice=Starting audio service...
 t=500

@@ -1,7 +1,5 @@
-# Add headphones: live scan list while searching
+# Add Device: searching, two devices found so far
 screen=1
-add_step=1
-add_type=0
 scanning=1
 link=5
 focus=0

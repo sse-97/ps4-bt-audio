@@ -1,0 +1,9 @@
+# Audio Latency: Most Stable is the current mode and has focus
+screen=3
+online=1
+link=2
+latency_mode=2
+selected=aabbccddeeff
+dev=AirPods Pro|aabbccddeeff|1
+focus=2
+t=600

@@ -32,8 +32,9 @@ stability, security and ease of use, with a reproducible Linux build and host te
   loopback; any phone or PC on the LAN can read and change **nothing** until you turn phone
   control on at the console and enter the six-digit code shown on the TV. See
   [`docs/API.md`](docs/API.md).
-- **Redesigned 1080p TV app** with guided *Add headphones* and *Fix a problem* flows,
-  region-correct confirm/cancel buttons, and a live output meter. It talks to the service
+- **Redesigned 1080p TV app** that looks and works like the PS4's own Settings screens: one
+  list, an Options menu for the connected device, and confirm/cancel buttons that follow
+  the console's enter-button setting. It talks to the service
   only through the JSON control API.
 - **Rebuilt phone companion page** — mobile-first, accessible, one contextual primary action
   — served from the console on port 8097.
@@ -109,13 +110,14 @@ also start after every jailbreak without opening the app, add the AutoRun entry 
 3. Make sure GoldHEN's **BinLoader (port 9090)** is enabled. It accepts one payload per
    jailbreak (any connection uses it up), so either let the app start the service **or**
    send it from your PC with Option B, not both. Then open **Bluetooth Audio** from
-   the home screen. The app renders at 1080p: the d-pad moves focus, the confirm
-   button connects the focused headphones (or starts the service when it is offline),
-   and the cancel button closes the app — confirm and cancel follow the console's
-   enter-button setting (Cross in most regions, Circle in Japan). Triangle opens the
-   guided **Add headphones** flow, Square toggles TV sound, Options plays a test tone,
-   and L1/R1 change the volume. The list also has **Add headphones** and **Fix a
-   problem** entries. The audio service keeps running after you close the app.
+   the home screen. The app renders at 1080p like a PS4 Settings screen: your devices,
+   then **Add Device**, **Volume** (left/right to change it), **Keep TV Sound On**,
+   **Audio Latency**, **Allow Phone Control** and **Stop Audio Service**. The confirm
+   button connects the focused device; on the connected one it opens the Options menu
+   (**Test Sound**, **Disconnect**), as does the Options button. The cancel button
+   closes the app. Confirm and cancel follow the console's enter-button setting (Cross
+   in most regions, Circle in Japan). If the service isn't running, the app offers to
+   start it. The audio service keeps running after you close the app.
 4. If the service still doesn't start, check `/data/bta_audio/app.log` on the console, or send the
    payload yourself with Option B below.
 
