@@ -63,9 +63,8 @@ client may reach without a token.
 | Method & path | Does |
 |---|---|
 | `GET /` | The web control page. |
-| `GET /api/status` | Full state as JSON (see below). |
+| `GET /api/status` | Full state as JSON (see below). The home-screen app and the web page both read this. |
 | `GET /api/timing` | Per-second send statistics for the last ~2 minutes. |
-| `GET /api/native` | Packed binary state for the home-screen app (legacy). |
 | `POST /api/pair/<code>` | Exchange the TV code for a token. |
 | `POST /api/scan` | Start a Bluetooth scan (not while streaming). |
 | `POST /api/select/<MAC>` | Choose a listed audio device and connect. |
@@ -103,8 +102,8 @@ The important fields:
 | `lan` | 1 if phone control is on. |
 | `pair_code` | The current six-digit code. **Only present for console-local callers**, never in a LAN response. |
 
-Remaining fields (`patch_rc`, `bt_state`, `relinks`, `resyncs`, timing counters,
-…) are diagnostics.
+Remaining fields (`drops`, `underruns`, `patch_rc`, `bt_state`, `relinks`,
+`resyncs`, timing counters, …) are diagnostics.
 
 ## Status codes
 

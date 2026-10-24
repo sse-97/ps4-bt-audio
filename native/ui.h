@@ -1,18 +1,43 @@
-/* Screen drawing for the native app. Pure C with no console dependencies, so the
- * PC harness (native/host_ui.c) can run this exact code and diff it pixel-for-pixel
- * against the preview renderer. Included by main.c. */
+/* Screen drawing for the home-screen app. Pure C with no console dependencies, so
+ * the PC harness (native/host_ui.c) runs this exact code and renders it to a PPM
+ * for the CI render check and for eyeballing a change. Included by main.c.
+ *
+ * Output is 1920x1080. Everything stays inside the inner 90% TV safe area
+ * (96 px side margins, 54 px top/bottom). The app is a client of the control API
+ * (docs/API.md): all state comes from GET /api/status via model.h, never from a
+ * private binary layout.
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
-#include "../app/protocol.h"
+#include "model.h"
 #include "ui_font.h"
 #include "ui_icons.h"
 
-#define WIDTH 1280
-#define HEIGHT 720
-#define UI_OFFLINE 6
+#define WIDTH 1920
+#define HEIGHT 1080
+#define MARGIN 96
+
+/* Screens and the sub-steps of the guided "Add headphones" flow. */
+enum { SCREEN_HOME = 0, SCREEN_ADD = 1, SCREEN_FIX = 2 };
+enum { ADD_TYPE = 0, ADD_SCAN = 1, ADD_TEST = 2 };
+
+/* Everything input-dependent the renderer needs, filled by main.c each frame
+ * (and by the host harness from a scene file). State itself lives in `state`. */
+struct ui_ctx {
+    int screen;         /* SCREEN_* */
+    int focus;          /* focus index within the current screen's focus ring */
+    int top;            /* scroll offset for the Home device list */
+    int confirm_circle; /* region: 1 => the Circle button confirms, Cross cancels */
+    int online;         /* service is answering */
+    int add_step;       /* ADD_* while on the Add screen */
+    int add_type;       /* 0 earbuds, 1 headphones, 2 speaker */
+    int pinmode;        /* PIN overlay active */
+    const char *pin;    /* four PIN digits */
+    int digit;          /* selected PIN digit */
+};
 
 #define BG_TOP 0x0e1624
 #define BG_BOT 0x090e17
@@ -35,13 +60,13 @@
 #define BTN_CI 0xff7a7a
 
 static uint32_t back[WIDTH*HEIGHT]; /* cached off-screen target; the video buffers are slow to read back */
-static struct bt_native state;
-static int online,ext_ok,focus,top,meter_s;
-static uint64_t g_now,testing_until,notice_until;
+static struct ui_state state;
+static int meter_s;
+static uint64_t g_now, testing_until, notice_until;
 static char notice[160];
 
 /* ---- drawing primitives. The PC previewer mirrors these exactly (integer math). ---- */
-static int cx0,cy0,cx1=WIDTH,cy1=HEIGHT;
+static int cx0, cy0, cx1 = WIDTH, cy1 = HEIGHT;
 static void clip(int x0,int y0,int x1,int y1){cx0=x0<0?0:x0;cy0=y0<0?0:y0;cx1=x1>WIDTH?WIDTH:x1;cy1=y1>HEIGHT?HEIGHT:y1;}
 static uint32_t mixc(uint32_t a,uint32_t b,unsigned t){
  return (((((a>>16)&255)*(256-t)+((b>>16)&255)*t)>>8)<<16)|(((((a>>8)&255)*(256-t)+((b>>8)&255)*t)>>8)<<8)|(((a&255)*(256-t)+(b&255)*t)>>8);
@@ -163,13 +188,26 @@ static void spinner(int cx,int cy,int r,uint32_t rgb,uint64_t t_ms,int dots,int 
  }
 }
 
-static int ui_link(void){
- if(!online)return UI_OFFLINE;
- if(ext_ok&&state.link>=BT_LINK_IDLE&&state.link<=BT_LINK_SEARCHING)return state.link;
- return state.streaming?BT_LINK_STREAMING:(state.wanted?BT_LINK_CONNECTING:BT_LINK_IDLE);
+/* ---- shared helpers ---- */
+static int ui_link(const struct ui_ctx*c){
+ if(!c->online)return LINK_OFFLINE;
+ return state.link>=LINK_IDLE&&state.link<=LINK_SEARCHING?state.link:LINK_IDLE;
 }
-/* ---- screen ---- */
-static void dev_name(const struct bt_device*d,char*out,size_t cap){
+static uint32_t link_color(int l){
+ switch(l){case LINK_STREAMING:return MINT;case LINK_CONNECTING:return AMBER;case LINK_SEARCHING:return BLUE;
+  case LINK_LOST:case LINK_FAILED:case LINK_OFFLINE:return RED;default:return GREY;}
+}
+static int secs(int ms){return(ms+999)/1000;}
+static const char*LAT_NAMES[3]={"Lowest","Balanced","Most stable"};
+static int lat_mode(void){int m=state.latency_mode;return m<0||m>2?1:m;}
+/* The connecting phase in words: the service distinguishes pairing and
+ * configuring, which the coarse link state folds into "connecting". */
+static const char*connect_word(void){
+ if(!strcmp(state.conn_state,"pairing"))return "Pairing";
+ if(!strcmp(state.conn_state,"configuring"))return "Configuring";
+ return "Connecting";
+}
+static void dev_name(const struct ui_device*d,char*out,size_t cap){
  const char*src=d->name;size_t len=strlen(src),n=len;
  while(n>0&&(src[n-1]=='?'||src[n-1]==' '))n--;
  int q=0;for(size_t i=n;i<len;i++)if(src[i]=='?')q++;
@@ -177,164 +215,344 @@ static void dev_name(const struct bt_device*d,char*out,size_t cap){
  if(n==0){snprintf(out,cap,"Unnamed device %04lX",d->address&0xffff);return;}
  if(n>=cap)n=cap-1;memcpy(out,src,n);out[n]=0;
 }
-static uint32_t link_color(int l){
- switch(l){case BT_LINK_STREAMING:return MINT;case BT_LINK_CONNECTING:return AMBER;case BT_LINK_SEARCHING:return BLUE;
-  case BT_LINK_LOST:case BT_LINK_FAILED:case UI_OFFLINE:return RED;default:return GREY;}
+/* The glyph for the physical "confirm" button, following the console's enter-button
+ * setting (Cross in most regions, Circle in Japan/parts of Asia). The cancel glyph
+ * is always the other one. Shape keeps its conventional colour so it matches the pad. */
+static int confirm_icon(const struct ui_ctx*c){return c->confirm_circle?I_BCIRCLE:I_BCROSS;}
+static int cancel_icon(const struct ui_ctx*c){return c->confirm_circle?I_BCROSS:I_BCIRCLE;}
+static uint32_t btn_glyph_color(int id){return id==I_BCROSS?BTN_X:id==I_BCIRCLE?BTN_CI:id==I_BSQUARE?BTN_SQ:BTN_TRI;}
+/* True when the Home-focused row is the device currently linked (so confirm
+ * disconnects it rather than starting a new connection). */
+static int focus_is_connected(const struct ui_ctx*c){
+ int l=ui_link(c);
+ if(c->focus<0||c->focus>=state.count)return 0;
+ return state.devices[c->focus].address==state.selected&&l!=LINK_IDLE&&l!=LINK_OFFLINE;
 }
-static int secs(int ms){return(ms+999)/1000;}
-static void draw(int pinmode,const char*pin,int digit){
- uint64_t t=g_now/1000;int l=ui_link();uint32_t col=link_color(l);int n=state.count;
- int retry=ext_ok?state.retry_ms:0,attempts=ext_ok?state.attempts:0,quiet=ext_ok?state.quiet_ms:0;
- int testing=(ext_ok&&state.test)||g_now<testing_until;
- char buf[TBUF],buf2[TBUF];
- clip(0,0,WIDTH,HEIGHT);gradient(BG_TOP,BG_BOT);
 
- /* header */
- logo(56,34);
- text(F_TITLE,146,74,"Bluetooth Audio",TEXT);
- text(F_SMALL,148,103,"PS4 game audio on your wireless headphones",SUBTLE);
- const char*pill=l==BT_LINK_STREAMING?"Connected":l==BT_LINK_CONNECTING?"Connecting":l==BT_LINK_SEARCHING?"Searching":l==BT_LINK_LOST?"Disconnected":l==BT_LINK_FAILED?"Can't connect":l==BT_LINK_IDLE?"Not connected":"Service offline";
- int pw=text_w(F_SMALLB,pill)+20+24+20,px=1224-pw;
- rrect(px,48,pw,44,22,mixc(CARD,col,36));
- unsigned pulse=(l==BT_LINK_CONNECTING||l==BT_LINK_SEARCHING)?150+(unsigned)((t/6)%100):255;
- disc(px+26,70,6,col,pulse>255?255:pulse);
- text(F_SMALLB,px+44,77,pill,mixc(TEXT,col,90));
-
- /* status strip: the one place problems are spelled out */
- const char*msg=state.message;char full[TBUF];
- int has_banner=1;uint32_t bc=AMBER;int spin=0;const char*btext=0;
- if(notice[0]&&g_now<notice_until){bc=AMBER;btext=notice;}
- else if(l==UI_OFFLINE){bc=RED;btext="The audio service isn't running. Press X to start it, or jailbreak again with GoldHEN's BinLoader enabled.";}
- else if(l==BT_LINK_LOST||l==BT_LINK_FAILED){bc=RED;
-  if(retry>0)snprintf(full,sizeof(full),"%s Next try in %ds.",msg,secs(retry));else snprintf(full,sizeof(full),"%s",msg);btext=full;}
- else if(l==BT_LINK_CONNECTING){bc=AMBER;spin=1;btext=msg;}
- else if(l==BT_LINK_SEARCHING){bc=BLUE;spin=1;btext=msg;}
- else if(l==BT_LINK_STREAMING&&quiet>4000){bc=AMBER;btext="Connected, waiting for sound from the PS4. Play something or press Options to test.";}
- else has_banner=0;
- if(has_banner){
-  rrect(56,124,1168,72,16,mixc(CARD,bc,30));rrect(56,124,6,72,3,bc);
-  if(spin)spinner(98,160,14,bc,t,8,3);else{disc(98,160,17,bc,255);icon_c(I_BANG,98,160,BG_TOP,255);}
-  int nl=wrap2(F_BODY,btext,1168-100-28,buf,buf2);
-  if(nl==1)text(F_BODY,130,168,buf,TEXT);else{text(F_BODY,130,154,buf,TEXT);text(F_BODY,130,182,buf2,TEXT);}
- }else{
-  disc(70,160,5,col,255);
-  text(F_BODY,90,168,l==BT_LINK_STREAMING?"Game audio is playing on your headphones.":"Choose your headphones, then press X to connect.",DIM);
+/* ---- header: logo, title, live status pill (shared by every screen) ---- */
+static void header(const struct ui_ctx*c,const char*subtitle){
+ int l=ui_link(c);uint32_t col=link_color(l);uint64_t t=g_now/1000;
+ logo(MARGIN,44);
+ text(F_TITLE,232,116,"Bluetooth Audio",TEXT);
+ text(F_SMALL,236,156,subtitle,SUBTLE);
+ const char*pill=l==LINK_STREAMING?"Connected":l==LINK_CONNECTING?"Connecting":l==LINK_SEARCHING?"Searching":l==LINK_LOST?"Disconnected":l==LINK_FAILED?"Can't connect":l==LINK_IDLE?"Not connected":"Service offline";
+ int pw=text_w(F_SMALLB,pill)+32+34+30,px=1824-pw;
+ rrect(px,56,pw,56,28,mixc(CARD,col,36));
+ unsigned pulse=(l==LINK_CONNECTING||l==LINK_SEARCHING)?150+(unsigned)((t/6)%100):255;
+ disc(px+34,84,8,col,pulse>255?255:pulse);
+ text(F_SMALLB,px+58,94,pill,mixc(TEXT,col,90));
+ /* Phone-control pairing code: shown whenever LAN control is on. The service
+  * only reveals the code to the console (loopback), so this is console-only. */
+ if(state.lan&&state.pair_code[0]){
+  char label[32];snprintf(label,sizeof(label),"Phone code %s",state.pair_code);
+  int cw=text_w(F_SMALLB,label)+34+30+16,cxp=px-20-cw;
+  rrect(cxp,56,cw,56,28,mixc(CARD,BLUE,22));
+  icon_c(I_PHONE,cxp+32,84,BLUE,255);
+  text(F_SMALLB,cxp+54,94,label,mixc(TEXT,BLUE,70));
  }
+}
 
- /* hero card */
- rrect(56,212,392,384,22,CARD);
- int cx=252,cy=298;
- clip(56,212,448,596);icon_c(I_GLOW,cx,cy,col,l!=BT_LINK_IDLE?95:30);clip(0,0,WIDTH,HEIGHT);
- disc(cx,cy,64,mixc(CARD,col,60),255);disc(cx,cy,64,col,255);
- disc(cx,cy,61,l!=BT_LINK_IDLE?mixc(CARD,col,52):CARD2,255);
- icon_c(I_HERO,cx,cy-1,l!=BT_LINK_IDLE?TEXT:FAINT,255);
- if(l==BT_LINK_CONNECTING||l==BT_LINK_SEARCHING)spinner(cx,cy,80,col,t,10,4);
- int badge=l==BT_LINK_STREAMING?I_CHECK:l==BT_LINK_LOST?I_BANG:l==BT_LINK_FAILED?I_XMARK:l==UI_OFFLINE?I_BANG:-1;
- if(badge>=0){disc(cx+46,cy+46,20,CARD,255);disc(cx+46,cy+46,17,col,255);icon_c(badge,cx+46,cy+46,BG_TOP,255);}
- const struct bt_device*target=0;for(int i=0;i<n;i++)if(state.devices[i].address==state.selected)target=&state.devices[i];
- if(target&&l!=BT_LINK_IDLE&&l!=UI_OFFLINE){dev_name(target,buf,sizeof(buf));}else snprintf(buf,sizeof(buf),"No headphones connected");
- text_c(F_NAME,cx,406,buf,TEXT,352);
+/* ---- status banner: the one place problems are spelled out (Home only) ---- */
+static void banner(const struct ui_ctx*c){
+ int l=ui_link(c);uint32_t col=link_color(l);uint64_t t=g_now/1000;
+ int retry=state.retry_ms,quiet=state.quiet_ms;
+ const char*msg=state.message;char full[TBUF],b1[TBUF],b2[TBUF];
+ int has=1;uint32_t bc=AMBER;int spin=0;const char*btext=0;
+ if(notice[0]&&g_now<notice_until){bc=AMBER;btext=notice;}
+ else if(l==LINK_OFFLINE){bc=RED;btext="The audio service isn't running. Press the confirm button to start it, or jailbreak again with GoldHEN's BinLoader enabled.";}
+ else if(l==LINK_LOST||l==LINK_FAILED){bc=RED;
+  if(retry>0)snprintf(full,sizeof(full),"%s Next try in %ds.",msg,secs(retry));else snprintf(full,sizeof(full),"%s",msg);btext=full;}
+ else if(l==LINK_CONNECTING){bc=AMBER;spin=1;btext=msg;}
+ else if(l==LINK_SEARCHING){bc=BLUE;spin=1;btext=msg;}
+ else if(l==LINK_STREAMING&&quiet>4000){bc=AMBER;btext="Connected, waiting for sound from the PS4. Play something or press Options to test.";}
+ else has=0;
+ if(has){
+  rrect(MARGIN,176,1728,100,20,mixc(CARD,bc,30));rrect(MARGIN,176,8,100,4,bc);
+  if(spin)spinner(146,226,20,bc,t,8,4);else{disc(146,226,24,bc,255);icon_c(I_BANG,146,226,BG_TOP,255);}
+  int nl=wrap2(F_BODY,btext,1728-130-40,b1,b2);
+  if(nl==1)text(F_BODY,192,236,b1,TEXT);else{text(F_BODY,192,218,b1,TEXT);text(F_BODY,192,256,b2,TEXT);}
+ }else{
+  disc(120,226,7,col,255);
+  text(F_BODY,148,236,l==LINK_STREAMING?"Game audio is playing on your headphones.":"Choose your headphones, then press the confirm button to connect.",DIM);
+ }
+}
+
+/* ---- a reusable legend chip (icon or button tag + label) ---- */
+struct chip{int icon;const char*tag1,*tag2,*label;uint32_t lc;};
+static void legend(const struct chip*items,int count){
+ int x=MARGIN;
+ for(int k=0;k<count;k++){
+  int w=text_w(F_SMALL,items[k].label)+40;int t1=0,t2=0;
+  if(items[k].icon>=0)w+=44;
+  if(items[k].tag1){t1=text_w(F_SMALLB,items[k].tag1)+24;w+=t1+10;if(items[k].tag2){t2=text_w(F_SMALLB,items[k].tag2)+24;w+=t2+8;}}
+  rrect(x,952,w,58,29,CARD);
+  int tx=x+20;
+  if(items[k].icon>=0){disc(x+32,981,20,CARD2,255);icon_c(items[k].icon,x+32,981,btn_glyph_color(items[k].icon),255);tx=x+62;}
+  if(items[k].tag1){
+   tx=x+16;rrect(tx,966,t1,34,10,CARD2);text(F_SMALLB,tx+12,991,items[k].tag1,items[k].lc);tx+=t1+8;
+   if(items[k].tag2){rrect(tx,966,t2,34,10,CARD2);text(F_SMALLB,tx+12,991,items[k].tag2,items[k].lc);tx+=t2+8;}
+   tx+=4;
+  }
+  text(F_SMALL,tx,991,items[k].label,items[k].lc);
+  x+=w+16;
+ }
+}
+
+/* ---- one device row, used by Home and the Add scan list ---- */
+static void device_row(const struct ui_ctx*c,int i,int x,int y,int w,int sel){
+ int l=ui_link(c);uint32_t col=link_color(l);char buf[TBUF];
+ const struct ui_device*d=&state.devices[i];
+ int is_t=d->address==state.selected&&l!=LINK_IDLE&&l!=LINK_OFFLINE;
+ rrect(x,y,w,72,16,sel?CARDF:CARD2);
+ if(sel)rrect(x,y+14,6,44,3,MINT);
+ uint32_t ic=is_t?col:FAINT;
+ disc(x+48,y+36,26,mixc(sel?CARDF:CARD2,ic,40),255);
+ icon_c(I_ROWHP,x+48,y+36,is_t?mixc(TEXT,ic,60):DIM,255);
+ char sub[80];sub[0]=0;uint32_t subc=FAINT;
+ if(is_t){
+  switch(l){
+   case LINK_CONNECTING:if(state.attempts>1)snprintf(sub,sizeof(sub),"%s... attempt %d",connect_word(),state.attempts);else snprintf(sub,sizeof(sub),"%s...",connect_word());break;
+   case LINK_SEARCHING:snprintf(sub,sizeof(sub),"Searching...");break;
+   case LINK_LOST:snprintf(sub,sizeof(sub),"Connection lost - reconnecting");break;
+   case LINK_FAILED:snprintf(sub,sizeof(sub),"Can't connect");break;
+   default:break;
+  }
+  subc=col;
+ }else if(d->address==state.selected&&l==LINK_IDLE)snprintf(sub,sizeof(sub),"Last used");
+ dev_name(d,buf,sizeof(buf));
+ int textmax=w-120-200;
+ text_fit(F_NAME,x+88,y+(sub[0]?30:46),buf,TEXT,textmax);
+ if(sub[0])text_fit(F_SMALL,x+88,y+58,sub,subc,textmax);
+ int re=x+w-24;
+ if(sel&&!is_t){int cw=text_w(F_SMALLB,"Connect");icon_c(confirm_icon(c),re-cw-26,y+36,btn_glyph_color(confirm_icon(c)),255);text_r(F_SMALLB,re,y+45,"Connect",TEXT);}
+ else if(is_t){
+  const char*label=l==LINK_STREAMING?"PLAYING":l==LINK_CONNECTING?"CONNECTING":l==LINK_SEARCHING?"SEARCHING":l==LINK_LOST?"LOST":"FAILED";
+  int lw=text_w(F_SMALLB,label)+36;rrect(re-lw,y+19,lw,34,17,mixc(CARD2,col,50));text(F_SMALLB,re-lw+18,y+44,label,col);
+ }
+}
+
+/* ======================= Home ======================= */
+static void draw_home(const struct ui_ctx*c){
+ uint64_t t=g_now/1000;int l=ui_link(c);uint32_t col=link_color(l);int n=state.count;
+ int testing=state.test||g_now<testing_until;
+ char buf[TBUF];
+ banner(c);
+
+ /* hero card: the active device and its controls */
+ rrect(MARGIN,300,600,584,24,CARD);
+ int cx=MARGIN+300,cy=440;
+ clip(MARGIN,300,MARGIN+600,884);icon_c(I_GLOW,cx,cy,col,l!=LINK_IDLE?95:30);clip(0,0,WIDTH,HEIGHT);
+ disc(cx,cy,96,mixc(CARD,col,60),255);disc(cx,cy,96,col,255);
+ disc(cx,cy,92,l!=LINK_IDLE?mixc(CARD,col,52):CARD2,255);
+ icon_c(I_HERO,cx,cy-2,l!=LINK_IDLE?TEXT:FAINT,255);
+ if(l==LINK_CONNECTING||l==LINK_SEARCHING)spinner(cx,cy,120,col,t,10,5);
+ int badge=l==LINK_STREAMING?I_CHECK:l==LINK_LOST?I_BANG:l==LINK_FAILED?I_XMARK:l==LINK_OFFLINE?I_BANG:-1;
+ if(badge>=0){disc(cx+70,cy+70,30,CARD,255);disc(cx+70,cy+70,26,col,255);icon_c(badge,cx+70,cy+70,BG_TOP,255);}
+ const struct ui_device*target=0;for(int i=0;i<n;i++)if(state.devices[i].address==state.selected)target=&state.devices[i];
+ if(target&&l!=LINK_IDLE&&l!=LINK_OFFLINE)dev_name(target,buf,sizeof(buf));else if(state.name[0]&&l!=LINK_IDLE&&l!=LINK_OFFLINE)snprintf(buf,sizeof(buf),"%s",state.name);else snprintf(buf,sizeof(buf),"No headphones");
+ text_c(F_NAME,cx,600,buf,TEXT,540);
  char sl[64];
  switch(l){
-  case BT_LINK_STREAMING:snprintf(sl,sizeof(sl),"Playing");break;
-  case BT_LINK_CONNECTING:if(attempts>1)snprintf(sl,sizeof(sl),"Connecting  (attempt %d)",attempts);else snprintf(sl,sizeof(sl),"Connecting");break;
-  case BT_LINK_SEARCHING:snprintf(sl,sizeof(sl),"Searching");break;
-  case BT_LINK_LOST:snprintf(sl,sizeof(sl),"Connection lost");break;
-  case BT_LINK_FAILED:snprintf(sl,sizeof(sl),"Can't connect");break;
-  case BT_LINK_IDLE:snprintf(sl,sizeof(sl),"Not connected");break;
+  case LINK_STREAMING:snprintf(sl,sizeof(sl),"Playing");break;
+  case LINK_CONNECTING:if(state.attempts>1)snprintf(sl,sizeof(sl),"%s  (attempt %d)",connect_word(),state.attempts);else snprintf(sl,sizeof(sl),"%s",connect_word());break;
+  case LINK_SEARCHING:snprintf(sl,sizeof(sl),"Searching");break;
+  case LINK_LOST:snprintf(sl,sizeof(sl),"Connection lost");break;
+  case LINK_FAILED:snprintf(sl,sizeof(sl),"Can't connect");break;
+  case LINK_IDLE:snprintf(sl,sizeof(sl),"Not connected");break;
   default:snprintf(sl,sizeof(sl),"Service offline");break;
  }
  if(testing)snprintf(sl,sizeof(sl),"Playing test tone");
- text_c(F_BODY,cx,438,sl,l!=BT_LINK_IDLE?col:DIM,352);
- char detail[64];detail[0]=0;
- if(l==BT_LINK_STREAMING)snprintf(detail,sizeof(detail),state.tv?"TV sound is on":"TV sound is muted");
- else if(l==BT_LINK_LOST||l==BT_LINK_FAILED){if(retry>0)snprintf(detail,sizeof(detail),"Retrying in %ds",secs(retry));else snprintf(detail,sizeof(detail),"Retrying...");}
- else if(l==BT_LINK_IDLE)snprintf(detail,sizeof(detail),"Pick headphones on the right");
- if(detail[0])text_c(F_SMALL,cx,466,detail,FAINT,352);
- if(l==BT_LINK_STREAMING&&ext_ok){
-  rrect(106,488,292,8,4,LINE);int fw=292*meter_s/100;if(fw>=8)rrect(106,488,fw,8,4,MINT);
+ text_c(F_BODY,cx,644,sl,l!=LINK_IDLE?col:DIM,540);
+ char detail[80];detail[0]=0;
+ if(l==LINK_STREAMING)snprintf(detail,sizeof(detail),"%s  -  %s latency",state.tv?"TV on":"TV muted",LAT_NAMES[lat_mode()]);
+ else if(l==LINK_LOST||l==LINK_FAILED){if(state.retry_ms>0)snprintf(detail,sizeof(detail),"Retrying in %ds",secs(state.retry_ms));else snprintf(detail,sizeof(detail),"Retrying...");}
+ else if(l==LINK_IDLE)snprintf(detail,sizeof(detail),"Pick headphones on the right");
+ if(detail[0])text_c(F_SMALL,cx,680,detail,FAINT,540);
+ if(l==LINK_STREAMING){
+  rrect(cx-150,712,300,10,5,LINE);int fw=300*meter_s/100;if(fw>=10)rrect(cx-150,712,fw,10,5,MINT);
  }
- icon_c(I_SPEAKER,98,548,DIM,255);
- rrect(124,544,236,8,4,LINE);int vw=236*state.volume/100;if(vw>=8)rrect(124,544,vw,8,4,MINT);
- disc(124+vw,548,9,TEXT,255);
- snprintf(buf,sizeof(buf),"%d%%",state.volume);text_r(F_BODY,424,556,buf,TEXT);
+ icon_c(I_SPEAKER,154,812,DIM,255);
+ rrect(190,807,372,10,5,LINE);int vw=372*state.volume/100;if(vw>=10)rrect(190,807,vw,10,5,MINT);
+ disc(190+vw,812,11,TEXT,255);
+ snprintf(buf,sizeof(buf),"%d%%",state.volume);text_r(F_BODY,656,820,buf,TEXT);
 
- /* headphone list card */
- rrect(472,212,752,384,22,CARD);
- text(F_NAME,500,252,"Your headphones",TEXT);
- if(state.scanning){spinner(1168,242,9,BLUE,t,8,2);text_r(F_SMALL,1148,249,"Scanning",BLUE);}
+ /* device list card with Add / Fix actions pinned at the bottom */
+ rrect(728,300,1096,584,24,CARD);
+ text(F_NAME,760,358,"Your headphones",TEXT);
+ if(state.scanning){spinner(1764,350,12,BLUE,t,8,3);text_r(F_SMALL,1740,359,"Scanning",BLUE);}
+ int rx=744,rw=1064;
  if(n==0){
-  icon_c(I_HERO,848,372,LINE,255);
-  text_c(F_NAME,848,452,"No headphones found",DIM,640);
-  text_c(F_SMALL,848,482,"Put them in pairing mode, then press Triangle to scan.",FAINT,640);
+  icon_c(I_HERO,1276,520,LINE,255);
+  text_c(F_NAME,1276,610,"No headphones yet",DIM,900);
+  text_c(F_SMALL,1276,648,"Choose Add headphones below to pair your first device.",FAINT,900);
  }
- for(int row=0;row<5;row++){
-  int i=top+row;if(i>=n)break;
-  int y=268+row*64;const struct bt_device*d=&state.devices[i];
-  int is_t=d->address==state.selected&&l!=BT_LINK_IDLE&&l!=UI_OFFLINE,sel=focus==i;
-  rrect(488,y,720,60,14,sel?CARDF:CARD2);
-  if(sel)rrect(488,y+11,5,38,2,MINT);
-  uint32_t ic=is_t?col:FAINT;
-  disc(528,y+30,22,mixc(sel?CARDF:CARD2,ic,40),255);
-  icon_c(I_ROWHP,528,y+30,is_t?mixc(TEXT,ic,60):DIM,255);
-  char sub[64];sub[0]=0;uint32_t subc=FAINT;
-  if(is_t){
-   switch(l){
-    case BT_LINK_CONNECTING:if(attempts>1)snprintf(sub,sizeof(sub),"Connecting... attempt %d",attempts);else snprintf(sub,sizeof(sub),"Connecting...");break;
-    case BT_LINK_SEARCHING:snprintf(sub,sizeof(sub),"Searching...");break;
-    case BT_LINK_LOST:snprintf(sub,sizeof(sub),"Connection lost - reconnecting");break;
-    case BT_LINK_FAILED:snprintf(sub,sizeof(sub),"Can't connect");break;
-    default:break;
-   }
-   subc=col;
-  }else if(d->address==state.selected&&l==BT_LINK_IDLE){snprintf(sub,sizeof(sub),"Last used");}
-  dev_name(d,buf,sizeof(buf));
-  text_fit(F_NAME,562,y+(sub[0]?27:39),buf,TEXT,440);
-  if(sub[0])text_fit(F_SMALL,562,y+51,sub,subc,440);
-  if(sel&&!is_t){int cw=text_w(F_SMALLB,"Connect");icon_c(I_BCROSS,1190-cw-18,y+30,BTN_X,255);text_r(F_SMALLB,1190,y+37,"Connect",TEXT);}
-  else if(is_t){
-   const char*label=l==BT_LINK_STREAMING?"PLAYING":l==BT_LINK_CONNECTING?"CONNECTING":l==BT_LINK_SEARCHING?"SEARCHING":l==BT_LINK_LOST?"LOST":"FAILED";
-   int lw=text_w(F_SMALLB,label)+28;rrect(1190-lw,y+15,lw,30,15,mixc(CARD2,col,50));text(F_SMALLB,1190-lw+14,y+37,label,col);
-  }
+ for(int row=0;row<4;row++){
+  int i=c->top+row;if(i>=n)break;
+  device_row(c,i,rx,384+row*80,rw,c->focus==i);
  }
- if(n>5){snprintf(buf,sizeof(buf),"%d-%d of %d",top+1,top+5<n?top+5:n,n);text_r(F_SMALL,state.scanning?1040:1196,250,buf,FAINT);}
+ if(n>4){snprintf(buf,sizeof(buf),"%d-%d of %d",c->top+1,c->top+4<n?c->top+4:n,n);text_r(F_SMALL,1792,359,buf,FAINT);}
+ fill(rx,712,rw,2,LINE);
+ struct{int icon;const char*label,*sub;}acts[2]={{I_ADD,"Add headphones","Pair a new device, with tips"},{I_WRENCH,"Fix a problem","No sound, stutter, not listed"}};
+ for(int a=0;a<2;a++){
+  int y=724+a*80,sel=c->focus==n+a;
+  rrect(rx,y,rw,72,16,sel?CARDF:CARD2);
+  if(sel)rrect(rx,y+14,6,44,3,MINT);
+  disc(rx+48,y+36,26,mixc(sel?CARDF:CARD2,MINT,30),255);
+  icon_c(acts[a].icon,rx+48,y+36,MINT,255);
+  text(F_NAME,rx+88,y+32,acts[a].label,TEXT);
+  text(F_SMALL,rx+88,y+58,acts[a].sub,FAINT);
+  if(sel&&c->online){int cw=text_w(F_SMALLB,"Open");icon_c(confirm_icon(c),rx+rw-24-cw-26,y+36,btn_glyph_color(confirm_icon(c)),255);text_r(F_SMALLB,rx+rw-24,y+45,"Open",TEXT);}
+ }
 
- /* controls */
- const char*act="Connect";
- if(!online)act="Retry";
- else if(focus>=0&&focus<n){const struct bt_device*fd=&state.devices[focus];if(fd->address==state.selected&&l!=BT_LINK_IDLE)act=l==BT_LINK_STREAMING?"Disconnect":"Stop trying";}
- uint32_t testc=l==BT_LINK_STREAMING?DIM:FAINT;
+ const char*tri="Add headphones";
  char tvlabel[32];snprintf(tvlabel,sizeof(tvlabel),"TV: %s",state.tv?"On":"Muted");
- const char*tri=!online||l==BT_LINK_IDLE?"Scan":l==BT_LINK_STREAMING?"Disconnect":"Stop trying";
- struct{int icon;uint32_t ic;const char*tag1,*tag2,*label;uint32_t lc;}items[6]={
-  {I_BCROSS,BTN_X,0,0,act,DIM},{I_BSQUARE,BTN_SQ,0,0,tvlabel,DIM},{I_BTRI,BTN_TRI,0,0,tri,DIM},
-  {-1,0,"OPTIONS",0,"Test sound",testc},{-1,0,"L1","R1","Volume",DIM},{I_BCIRCLE,BTN_CI,0,0,"Close",DIM}};
- int x=56;
- for(int k=0;k<6;k++){
-  int w=text_w(F_SMALL,items[k].label)+30;int t1=0,t2=0;
-  if(items[k].icon>=0)w+=34;
-  if(items[k].tag1){t1=text_w(F_SMALLB,items[k].tag1)+18;w+=t1+8;if(items[k].tag2){t2=text_w(F_SMALLB,items[k].tag2)+18;w+=t2+6;}}
-  rrect(x,620,w,46,23,CARD);
-  int tx=x+16;
-  if(items[k].icon>=0){disc(x+25,643,15,CARD2,255);icon_c(items[k].icon,x+25,643,items[k].ic,255);tx=x+48;}
-  if(items[k].tag1){
-   tx=x+12;rrect(tx,630,t1,26,8,CARD2);text(F_SMALLB,tx+9,650,items[k].tag1,items[k].lc);tx+=t1+6;
-   if(items[k].tag2){rrect(tx,630,t2,26,8,CARD2);text(F_SMALLB,tx+9,650,items[k].tag2,items[k].lc);tx+=t2+6;}
-   tx+=2;
-  }
-  text(F_SMALL,tx,650,items[k].label,items[k].lc);
-  x+=w+12;
- }
+ struct chip chips[6]={
+  {confirm_icon(c),0,0,!c->online?"Start service":c->focus<n?(focus_is_connected(c)?"Disconnect":"Connect"):"Open",DIM},
+  {I_BTRI,0,0,tri,DIM},
+  {I_BSQUARE,0,0,tvlabel,DIM},
+  {-1,"OPTIONS",0,"Test sound",l==LINK_STREAMING?DIM:FAINT},
+  {-1,"L1","R1","Volume",DIM},
+  {cancel_icon(c),0,0,"Close",DIM}};
+ if(!c->pinmode)legend(chips,6);
+}
 
- if(pinmode){
-  dim_frame(150);
-  rrect(340,180,600,360,24,0x1b2a40);rrect(340,180,600,6,3,MINT);
-  text_c(F_TITLE,640,252,"Pairing PIN",TEXT,520);
-  text_c(F_BODY,640,292,"These headphones ask for a PIN. Try 0000 or 1234.",DIM,540);
-  for(int i=0;i<4;i++){
-   int bx=418+i*112;rrect(bx,330,92,100,16,i==digit?MINT:CARD2);
-   char tch[2]={pin[i],0};text_c(F_TITLE,bx+46,400,tch,i==digit?BG_TOP:TEXT,80);
+/* ======================= Add headphones ======================= */
+struct devtype{int icon;const char*name,*note,*tip;};
+static const struct devtype TYPES[3]={
+ {I_TYPE_EARBUD,"Earbuds","AirPods, buds in a case","Put the earbuds in the case, open the lid, then hold the case button until the light flashes white."},
+ {I_TYPE_HP,"Headphones","Over- or on-ear headset","Turn the headset on, then hold the power or Bluetooth button until the light flashes to enter pairing mode."},
+ {I_TYPE_SPK,"Speaker","Portable Bluetooth speaker","Turn the speaker on, then press and hold its Bluetooth button until it announces pairing or the light flashes."}};
+
+static void draw_add(const struct ui_ctx*c){
+ uint64_t t=g_now/1000;int l=ui_link(c);
+ char b1[TBUF],b2[TBUF];
+ if(c->add_step==ADD_TYPE){
+  text(F_BODY,MARGIN,240,"What are you pairing? Pick the closest match for the right tip.",DIM);
+  int cw=536,gap=60;
+  for(int i=0;i<3;i++){
+   int x=MARGIN+i*(cw+gap),sel=c->focus==i;
+   rrect(x,300,cw,330,24,sel?CARDF:CARD);
+   if(sel)rrect(x,300,cw,6,3,MINT);
+   icon_c(TYPES[i].icon,x+cw/2,440,sel?MINT:DIM,255);
+   text_c(F_NAME,x+cw/2,560,TYPES[i].name,TEXT,cw-48);
+   text_c(F_SMALL,x+cw/2,598,TYPES[i].note,FAINT,cw-48);
   }
-  text_c(F_SMALL,640,480,"Left/Right: digit    Up/Down: change    X: submit    O: cancel",FAINT,540);
+  rrect(MARGIN,666,1728,150,20,CARD2);rrect(MARGIN,666,6,150,3,BLUE);
+  text(F_SMALLB,146,712,"Pairing tip",BLUE);
+  int nl=wrap2(F_BODY,TYPES[c->focus%3].tip,1728-100,b1,b2);
+  if(nl==1)text(F_BODY,146,756,b1,TEXT);else{text(F_BODY,146,748,b1,TEXT);text(F_BODY,146,786,b2,TEXT);}
+  struct chip chips[2]={{confirm_icon(c),0,0,"Start pairing",DIM},{cancel_icon(c),0,0,"Back",DIM}};
+  if(!c->pinmode)legend(chips,2);
+  return;
  }
+ if(c->add_step==ADD_SCAN){
+  /* chosen type's tip + live scan status across the top */
+  rrect(MARGIN,224,1728,96,20,mixc(CARD,BLUE,20));rrect(MARGIN,224,8,96,4,BLUE);
+  if(state.scanning||l==LINK_SEARCHING)spinner(146,272,18,BLUE,t,8,4);else icon_c(TYPES[c->add_type%3].icon,146,272,BLUE,255);
+  text(F_SMALLB,192,258,state.scanning?"Searching for your device...":"Devices found",BLUE);
+  wrap2(F_SMALL,TYPES[c->add_type%3].tip,1728-130-40,b1,b2);text(F_SMALL,192,292,b1,DIM);
+  rrect(MARGIN,340,1728,544,24,CARD);
+  int n=state.count,rx=MARGIN+16,rw=1728-32;
+  if(n==0){
+   if(state.scanning||l==LINK_SEARCHING)spinner(960,560,26,BLUE,t,10,6);else icon_c(I_HERO,960,540,LINE,255);
+   text_c(F_NAME,960,640,state.scanning?"Looking for devices...":"No devices found yet",DIM,1200);
+   text_c(F_SMALL,960,680,"Keep the device in pairing mode. Press Triangle to scan again.",FAINT,1200);
+  }
+  for(int row=0;row<5;row++){int i=c->top+row;if(i>=n)break;device_row(c,i,rx,372+row*96,rw,c->focus==i);}
+  struct chip chips[3]={{confirm_icon(c),0,0,"Connect",DIM},{I_BTRI,0,0,"Scan again",DIM},{cancel_icon(c),0,0,"Back",DIM}};
+  if(!c->pinmode)legend(chips,3);
+  return;
+ }
+ /* ADD_TEST: confirm the user can hear the tone */
+ int cx=960,cy=470;uint32_t tc=l==LINK_STREAMING?MINT:AMBER;
+ icon_c(I_GLOW,cx,cy,tc,90);
+ disc(cx,cy,96,tc,255);disc(cx,cy,92,mixc(CARD,tc,52),255);
+ icon_c(I_SPEAKER,cx,cy,TEXT,255);
+ disc(cx+70,cy+70,30,CARD,255);disc(cx+70,cy+70,26,tc,255);icon_c(I_CHECK,cx+70,cy+70,BG_TOP,255);
+ text_c(F_TITLE,cx,660,"Can you hear the test tone?",TEXT,1500);
+ char line[160];snprintf(line,sizeof(line),state.name[0]?"Playing a short tone on %s.":"Playing a short tone on your headphones.",state.name);
+ text_c(F_BODY,cx,712,line,DIM,1400);
+ text_c(F_SMALL,cx,752,"If it's silent, choose No to get help.",FAINT,1400);
+ struct chip chips[3]={{confirm_icon(c),0,0,"Yes, all set",DIM},{I_BTRI,0,0,"Play again",DIM},{cancel_icon(c),0,0,"No, get help",DIM}};
+ if(!c->pinmode)legend(chips,3);
+}
+
+/* ======================= Fix a problem ======================= */
+struct problem{int icon;const char*title,*sub,*action;const char*help;};
+static const struct problem PROBLEMS[4]={
+ {I_SPEAKER,"No sound in the headphones","Connected but silent","Play test tone",
+  "Press the confirm button to play a test tone. If it stays silent, the headset may have connected in a silent mode: disconnect and connect again, or forget it on the headset and pair fresh."},
+ {I_BANG,"Sound is choppy or cutting out","Stutters, especially online","Show what helps",
+  "Wi-Fi shares the PS4's antenna with Bluetooth: use a wired LAN cable or 5 GHz Wi-Fi, keep the headset close and in sight. The button here steps the latency mode up - Most stable adds a little delay for far fewer dropouts."},
+ {I_ROWHP,"My headphones aren't listed","They never show up in the scan","Scan again",
+  "Put the headset into pairing mode (not just powered on), keep it close, and scan again. A headset still connected to a phone won't appear - turn Bluetooth off on the phone first."},
+ {I_PAD,"The controller feels laggy","Input delay while streaming","Why this happens",
+  "The controller and the headset share one radio. The service already keeps controller slots free; if lag persists, lower on-screen Bluetooth load by disconnecting other wireless devices."}};
+
+/* The choppy-sound row (index 1) doubles as the latency control: its subtitle
+ * shows the current mode and its action steps to the next, more stable one. */
+static const char*fix_sub(int i){
+ static char s[48];
+ if(i==1){snprintf(s,sizeof(s),"Now: %s latency",LAT_NAMES[lat_mode()]);return s;}
+ return PROBLEMS[i].sub;
+}
+static const char*fix_action(int i){
+ static char s[32];
+ if(i==1){snprintf(s,sizeof(s),"Use %s",LAT_NAMES[(lat_mode()+1)%3]);return s;}
+ return PROBLEMS[i].action;
+}
+static void draw_fix(const struct ui_ctx*c){
+ text(F_BODY,MARGIN,240,"Pick what's happening. Each one has a single step to try.",DIM);
+ for(int i=0;i<4;i++){
+  int y=300+i*92,sel=c->focus==i;
+  rrect(MARGIN,y,1728,80,16,sel?CARDF:CARD);
+  if(sel)rrect(MARGIN,y+16,6,48,3,MINT);
+  disc(MARGIN+48,y+40,28,mixc(sel?CARDF:CARD,MINT,26),255);
+  icon_c(PROBLEMS[i].icon,MARGIN+48,y+40,MINT,255);
+  text(F_NAME,MARGIN+92,y+36,PROBLEMS[i].title,TEXT);
+  text(F_SMALL,MARGIN+92,y+62,fix_sub(i),FAINT);
+  const char*act=fix_action(i);int cw=text_w(F_SMALLB,act);
+  if(sel){icon_c(confirm_icon(c),1824-24-cw-26,y+40,btn_glyph_color(confirm_icon(c)),255);text_r(F_SMALLB,1824-24,y+49,act,TEXT);}
+  else text_r(F_SMALL,1824-24,y+49,act,SUBTLE);
+ }
+ /* guidance for the focused problem, plus the service's own last words */
+ int fi=c->focus%4;char b1[TBUF],b2[TBUF];
+ rrect(MARGIN,684,1728,200,20,CARD2);
+ text(F_SMALLB,MARGIN+40,728,PROBLEMS[fi].title,MINT);
+ int nl=wrap2(F_BODY,PROBLEMS[fi].help,1728-80,b1,b2);
+ text(F_BODY,MARGIN+40,772,b1,TEXT);if(nl>1)text(F_BODY,MARGIN+40,810,b2,TEXT);
+ char last[TBUF];
+ if(fi==1&&(state.drops||state.underruns))snprintf(last,sizeof(last),"Recent: %d drops, %d underruns.",state.drops,state.underruns);
+ else if(state.message[0])snprintf(last,sizeof(last),"Service says: %s",state.message);
+ else snprintf(last,sizeof(last),"Service says: nothing to report.");
+ char lb[TBUF];text(F_SMALL,MARGIN+40,852,fit(F_SMALL,last,1728-80,lb),FAINT);
+ struct chip chips[2]={{confirm_icon(c),0,0,fix_action(fi),DIM},{cancel_icon(c),0,0,"Back",DIM}};
+ if(!c->pinmode)legend(chips,2);
+}
+
+/* ---- PIN overlay (modal over any screen) ---- */
+static void draw_pin(const struct ui_ctx*c){
+ dim_frame(150);
+ rrect(540,330,840,420,24,0x1b2a40);rrect(540,330,840,6,3,MINT);
+ text_c(F_TITLE,960,416,"Pairing PIN",TEXT,780);
+ text_c(F_BODY,960,464,"These headphones ask for a PIN. Try 0000 or 1234.",DIM,780);
+ for(int i=0;i<4;i++){
+  int bx=732+i*120;rrect(bx,504,96,104,16,i==c->digit?MINT:CARD2);
+  char tch[2]={c->pin[i],0};text_c(F_TITLE,bx+48,578,tch,i==c->digit?BG_TOP:TEXT,80);
+ }
+ text_c(F_SMALL,960,676,"Left/Right pick a digit      Up/Down change it",FAINT,790);
+ struct chip chips[2]={{confirm_icon(c),0,0,"Submit",DIM},{cancel_icon(c),0,0,"Cancel",DIM}};
+ legend(chips,2);
+}
+
+/* ---- top-level draw ---- */
+static const char*SUBTITLES[3]={"PS4 game audio on your wireless headphones","Add headphones","Fix a problem"};
+static void draw(const struct ui_ctx*c){
+ clip(0,0,WIDTH,HEIGHT);gradient(BG_TOP,BG_BOT);
+ int sc=c->screen;if(sc<0||sc>2)sc=0;
+ header(c,SUBTITLES[sc]);
+ if(sc==SCREEN_ADD)draw_add(c);
+ else if(sc==SCREEN_FIX)draw_fix(c);
+ else draw_home(c);
+ if(c->pinmode)draw_pin(c);
 }
