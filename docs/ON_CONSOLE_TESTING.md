@@ -13,8 +13,10 @@ finish, on the target console after installing a release build.
   FTP access (port 2121) to the console.
 - **How to read results:** the web page at `http://<PS4_IP>:8097/` → **Diagnostics**, and the
   raw `GET /api/status` and `GET /api/timing` JSON, show the counters named below. The app
-  also writes `/data/bta_audio/app.log`, and the service writes `status.json` and
-  `service.log` (its messages and connection steps).
+  also writes `/data/bta_audio/app.log`, and the service writes `status.json` (every 10 s)
+  and `service.log` (messages, connection steps, failed requests, audio summaries). Both
+  logs stamp lines with the UTC time; L3+R3 in the app saves a screenshot to
+  `app-frame.ppm`.
 
 Tick each box. If anything fails, note the `message`, `state` and the relevant counters.
 
@@ -136,6 +138,10 @@ Tick each box. If anything fails, note the `message`, `state` and the relevant c
 - [ ] **Theme and text.** The screens read clearly on the TV in the app's gray theme.
 - [ ] **Diagnostics.** The web Diagnostics panel and `/api/timing` show live packets, reconnects,
       resyncs, drops/underruns and late-packet counts.
+- [ ] **Opens beside a game.** With a game running, opening Bluetooth Audio does not ask to
+      close the game (the app is a mini app, CATEGORY `gde`). The app draws and reads the
+      controller; `app.log` shows `Video memory: … alloc=0x0 map=0x0`. Closing it returns
+      to the game.
 - [ ] **App is display-only.** Closing the app (Back on Home, or Close in the Start dialog)
       returns to the home screen without an error (no CE-34878-0), and leaves the service
       and audio running. If it does crash, `app.log`'s last `exit:` line has the result

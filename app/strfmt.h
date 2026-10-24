@@ -45,6 +45,27 @@ static void ip_text(u32 addr, char out[16]) {
     out[n] = 0;
 }
 
+/* "HH:MM:SS" (UTC) of a Unix time in seconds. */
+static void clock_text(u64 sec, char out[9]) {
+    unsigned s = (unsigned)(sec % 86400);
+    out[0] = (char)('0' + s / 36000); out[1] = (char)('0' + s / 3600 % 10); out[2] = ':';
+    out[3] = (char)('0' + s % 3600 / 600); out[4] = (char)('0' + s % 600 / 60); out[5] = ':';
+    out[6] = (char)('0' + s % 60 / 10); out[7] = (char)('0' + s % 10); out[8] = 0;
+}
+
+/* "YYYY-MM-DD" (UTC) of a Unix time in seconds: days to a civil date, the
+ * era-based algorithm from Howard Hinnant's chrono notes. */
+static void date_text(u64 sec, char out[11]) {
+    long z = (long)(sec / 86400) + 719468, era = z / 146097, doe = z - era * 146097;
+    long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    long doy = doe - (365 * yoe + yoe / 4 - yoe / 100), mp = (5 * doy + 2) / 153;
+    long d = doy - (153 * mp + 2) / 5 + 1, m = mp < 10 ? mp + 3 : mp - 9, y = yoe + era * 400 + (m <= 2);
+    out[0] = (char)('0' + y / 1000 % 10); out[1] = (char)('0' + y / 100 % 10);
+    out[2] = (char)('0' + y / 10 % 10); out[3] = (char)('0' + y % 10); out[4] = '-';
+    out[5] = (char)('0' + m / 10); out[6] = (char)('0' + m % 10); out[7] = '-';
+    out[8] = (char)('0' + d / 10); out[9] = (char)('0' + d % 10); out[10] = 0;
+}
+
 /* Parse twelve hex digits of a MAC that must be followed by " HTTP/1." (so a
  * truncated or malformed request line is rejected). Returns 0 on any error. */
 static u64 parse_mac(const char *p) {

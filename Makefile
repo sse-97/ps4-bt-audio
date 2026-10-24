@@ -104,9 +104,11 @@ $(PKG): $(NATIVE)/BluetoothAudio.elf $(NATIVE)/icon0.png $(PAYLOAD) VERSION
 	   $(OO_PS4_TOOLCHAIN)/samples/hello_world/sce_module/libSceFios2.prx $(PKGDIR)/sce_module/
 	cp $(PAYLOAD) $(PKGDIR)/assets/BTA-Audio.bin
 	$(PKGTOOL) sfo_new $(PKGDIR)/sce_sys/param.sfo
+	@# CATEGORY gde is a non-game mini app, which the PS4 runs alongside a game; a gd
+	@# app is a game, and opening it closes the one running.
 	set -e; sfo() { $(PKGTOOL) sfo_setentry $(PKGDIR)/sce_sys/param.sfo $$1 --type $$2 --maxsize $$3 --value "$$4"; }; \
 	sfo APP_TYPE Integer 4 1; sfo APP_VER Utf8 8 $(SFO_VERSION); \
-	sfo ATTRIBUTE Integer 4 0; sfo CATEGORY Utf8 4 gd; \
+	sfo ATTRIBUTE Integer 4 0; sfo CATEGORY Utf8 4 gde; \
 	sfo CONTENT_ID Utf8 48 $(CONTENT_ID); sfo DOWNLOAD_DATA_SIZE Integer 4 0; \
 	sfo SYSTEM_VER Integer 4 0; sfo TITLE Utf8 128 'Bluetooth Audio'; \
 	sfo TITLE_ID Utf8 12 $(TITLE_ID); sfo VERSION Utf8 8 $(SFO_VERSION)

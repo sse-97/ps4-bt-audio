@@ -40,6 +40,18 @@ void test_strfmt(void) {
     CHECK(!bta_prefix("hello", "hello world"));
     CHECK(bta_prefix("abc", ""));
 
+    /* clock_text / date_text: Unix seconds to UTC "HH:MM:SS" and "YYYY-MM-DD",
+     * including the epoch, a leap day and the end of a year. */
+    { char t[9], d[11];
+      clock_text(0, t); date_text(0, d);
+      CHECK(!strcmp(t, "00:00:00")); CHECK(!strcmp(d, "1970-01-01"));
+      clock_text(1700000000UL, t); date_text(1700000000UL, d);
+      CHECK(!strcmp(t, "22:13:20")); CHECK(!strcmp(d, "2023-11-14"));
+      date_text(951782400UL, d); CHECK(!strcmp(d, "2000-02-29"));
+      clock_text(1735689599UL, t); date_text(1735689599UL, d);
+      CHECK(!strcmp(t, "23:59:59")); CHECK(!strcmp(d, "2024-12-31"));
+      date_text(1735689600UL, d); CHECK(!strcmp(d, "2025-01-01")); }
+
     /* ip_text: a network-order IPv4 address (bytes as in a sockaddr) to text. */
     { static const unsigned char cases[4][4] = {{192, 168, 1, 97}, {10, 0, 0, 5}, {255, 255, 255, 255}, {0, 0, 0, 0}};
       static const char *want[4] = {"192.168.1.97", "10.0.0.5", "255.255.255.255", "0.0.0.0"};
