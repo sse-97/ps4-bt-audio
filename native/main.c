@@ -196,6 +196,35 @@ static void snapshot(void){
  sceKernelClose(fd);logline("snapshot: written");
 }
 
+/* The system's view of this app, from sceSystemServiceGetStatus. OpenOrbis v0.5.4
+ * declares that call without a prototype; this is the layout of the SDK names the
+ * GPCS4, fpPS4 and shadPS4 headers agree on. */
+typedef struct { int32_t eventNum; uint8_t overlaid,background,cpu7,live_streaming,out_of_vr_area; uint8_t reserved[125]; } SystemStatus;
+#define PAD_INTERCEPTED 0x80000000u /* SCE_PAD_BUTTON_INTERCEPTED: the system UI took this input */
+/* True while the app shouldn't act on the controller: the system UI is on top, another
+ * app is in front, the pad data is marked intercepted, or the app was just resumed
+ * (the wall clock jumped while this process stood still). A status flag only counts
+ * once it has been seen clear, so one that is stuck at 1 can't lock the app out.
+ * Each change goes to app.log, which shows what the console actually reports. */
+static int system_away(unsigned buttons,int*behind){
+ static uint64_t wall_last;static int seen_front,last=-1;
+ SystemStatus st;memset(&st,0,sizeof(st));
+ int32_t(*get)(SystemStatus*)=(int32_t(*)(SystemStatus*))(void*)sceSystemServiceGetStatus;
+ int rc=get(&st),ok=rc>=0;
+ if(ok&&!st.overlaid&&!st.background)seen_front=1;
+ int over=ok&&seen_front&&st.overlaid,bg=ok&&seen_front&&st.background,icpt=(buttons&PAD_INTERCEPTED)!=0;
+ OrbisKernelTimeval tv;uint64_t wall=0;
+ if(!sceKernelGettimeofday(&tv)&&tv.tv_sec>0)wall=(uint64_t)tv.tv_sec*1000000+(uint64_t)tv.tv_usec;
+ int resumed=wall_last&&wall>wall_last+1000000;wall_last=wall;
+ int code=over|bg<<1|icpt<<2;
+ if(code!=last||resumed){
+  char m[112];snprintf(m,sizeof(m),"focus: overlaid=%d background=%d intercepted=%d%s (status rc=0x%x raw=%d/%d)",over,bg,icpt,resumed?", resumed":"",rc,st.overlaid,st.background);
+  logline(m);last=code;
+ }
+ *behind=bg;
+ return over||bg||icpt||resumed;
+}
+
 /* Returning from main ends in a raw exit system call, which the app sandbox
  * refuses with SIGSYS: the system then reports a crash (CE-34878-0). Ask the
  * system to close the app instead, as other homebrew apps (game or mini app) do,
@@ -237,7 +266,7 @@ int main(void){
  logline("Checking audio service");refresh();start_service();
  logline("Starting display loop");
  unsigned previous=0;int buffer=0,armed=0;long flip=0;uint64_t poll=0,repeat=0,snap_cd=0,start_at=0;
- int pinignore=0,scan_connecting=0;unsigned long scan_addr=0;
+ int pinignore=0,scan_connecting=0,held=0;unsigned long scan_addr=0;
  for(;;){
   uint64_t now=sceKernelGetProcessTime();g_now=now;
   int l=online?(state.link>=LINK_IDLE&&state.link<=LINK_SEARCHING?state.link:LINK_IDLE):LINK_OFFLINE;
@@ -282,6 +311,13 @@ int main(void){
   else if(buttons!=previous)repeat=now+450000;
   previous=buttons;
   if(!armed)pressed=0;
+  /* While the system's UI covers the app or another app is in front, the buttons
+   * aren't meant for it; and the press that brings it back (X on its tile or in the
+   * Quick Menu) may still be held. So no input then, and afterwards none until every
+   * button has been let go. */
+  int behind=0,away=system_away(buttons,&behind);
+  if(away)held=1;
+  if(held){pressed=0;if(!away&&!(buttons&~PAD_INTERCEPTED))held=0;}
 
   unsigned CONFIRM=ctx.confirm_circle?ORBIS_PAD_BUTTON_CIRCLE:ORBIS_PAD_BUTTON_CROSS;
   unsigned CANCEL =ctx.confirm_circle?ORBIS_PAD_BUTTON_CROSS :ORBIS_PAD_BUTTON_CIRCLE;
@@ -316,7 +352,7 @@ int main(void){
   }else if(ctx.screen==SCREEN_SCAN){
    step(&ctx.focus,pressed,state.count);clamp_scan_focus();
    if(pressed&CONFIRM){if(state.count>0&&ctx.focus>=0&&ctx.focus<state.count){scan_addr=state.devices[ctx.focus].address;scan_connecting=1;logline("action: select (add)");select_index(ctx.focus);}}
-   if(pressed&ORBIS_PAD_BUTTON_TRIANGLE){logline("action: scan again");action("/api/scan");}
+   if(pressed&ORBIS_PAD_BUTTON_TRIANGLE&&!state.scanning){logline("action: scan again");action("/api/scan");}
    if(pressed&CANCEL)go_home(fixed_row(ROW_ADD));
   }else if(ctx.screen==SCREEN_TEST){
    step(&ctx.focus,pressed,TEST_COUNT);
@@ -346,13 +382,17 @@ int main(void){
     else if(row==ROW_PHONE){logline("action: phone control");action(state.lan?"/api/lan-off":"/api/lan-on");}
     else if(row==ROW_STOP){ctx.dialog=DLG_STOP;ctx.dialog_focus=1;}
    }
-   if(pressed&CANCEL)break;
+   /* Back does nothing here: like the system's own apps, the app stays open and
+    * the PS button leaves it, so returning to it doesn't start it over. It closes
+    * from the Quick Menu (Close Application). */
   }
 
   /* Sent, but no service ever answered (e.g. one still running holds the port
    * yet can't be reached): say so rather than leave the dialog empty. */
   if(starting&&!online&&notice[0]&&g_now>=notice_until)start_notice("The audio service didn't answer. Restart the PS4, then press Start.");
   if(notice[0]&&g_now>=notice_until)notice[0]=0;
+  /* Behind another app nothing shows: spare the console the drawing. */
+  if(behind){sceKernelUsleep(100000);continue;}
   draw(&ctx);
   memcpy(buffers[buffer],back,sizeof(back));
   /* L3+R3 saves the screen to app-frame.ppm (6 MB), only when asked for. */
