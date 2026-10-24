@@ -30,7 +30,8 @@ void test_json(void);
 void test_auth(void);
 void test_strfmt(void);
 void test_dsp(void);
-void test_core(void);
+void test_conn(void);
+void test_profiles(void);
 void test_timing(void);
 void test_pacing(void);
 #endif
