@@ -178,7 +178,7 @@ int main(void){
  logline("Checking audio service");refresh();start_service();
  logline("Starting display loop");
  unsigned previous=0;int buffer=0,armed=0;long flip=0;uint64_t poll=0,repeat=0,first_draw=0,snap_cd=0;
- int pinmode=0,pinignore=0,digit=0,auto_snapped=0,scan_connecting=0,test_fired=0;char pin[5]="0000";
+ int pinmode=0,pinignore=0,digit=0,auto_snapped=0,scan_connecting=0,test_fired=0;char pin[5]="0000";unsigned long scan_addr=0;
  for(;;){
   uint64_t now=sceKernelGetProcessTime();g_now=now;
   int l=online?(state.link>=LINK_IDLE&&state.link<=LINK_SEARCHING?state.link:LINK_IDLE):LINK_OFFLINE;
@@ -193,13 +193,15 @@ int main(void){
   else if(ctx.screen==SCREEN_ADD&&ctx.add_step==ADD_SCAN)clamp_scan_focus();
   else if(ctx.screen==SCREEN_ADD){if(ctx.focus<0||ctx.focus>2)ctx.focus=0;}
   else if(ctx.screen==SCREEN_FIX){if(ctx.focus<0||ctx.focus>3)ctx.focus=0;}
-  /* Auto-advance the Add flow to the test-tone step once the chosen device is playing. */
-  if(ctx.screen==SCREEN_ADD&&ctx.add_step==ADD_SCAN&&scan_connecting&&l==LINK_STREAMING){
+  /* The connect-and-wait only lives while we're on the scan step. */
+  if(!(ctx.screen==SCREEN_ADD&&ctx.add_step==ADD_SCAN))scan_connecting=0;
+  /* Auto-advance the Add flow to the test-tone step once the device the user
+   * chose here is actually playing (not some other device already streaming). */
+  if(scan_connecting&&l==LINK_STREAMING&&scan_addr&&state.selected==scan_addr){
    ctx.add_step=ADD_TEST;scan_connecting=0;if(!test_fired){action("/api/test");test_fired=1;}
   }
   /* PIN prompt rises and falls with the service flag. */
   if(!state.pin_pending)pinignore=0;if(state.pin_pending&&!pinmode&&!pinignore){pinmode=1;digit=0;memcpy(pin,"0000",5);}
-  ctx.pinmode=pinmode;ctx.digit=digit;memcpy(pin_buf,pin,5);
 
   unsigned buttons=controller(now);
   if(!armed&&pad_connected){previous=buttons;armed=1;}
@@ -225,7 +227,7 @@ int main(void){
     if(pressed&CANCEL){ctx.screen=SCREEN_HOME;ctx.focus=state.count;clamp_home_focus();}
    }else if(ctx.add_step==ADD_SCAN){
     if(pressed&ORBIS_PAD_BUTTON_DOWN)ctx.focus++;if(pressed&ORBIS_PAD_BUTTON_UP)ctx.focus--;clamp_scan_focus();
-    if(pressed&CONFIRM){if(state.count>0){scan_connecting=1;test_fired=0;logline("action: select (add)");select_focused();}}
+    if(pressed&CONFIRM){if(state.count>0&&ctx.focus>=0&&ctx.focus<state.count){scan_addr=state.devices[ctx.focus].address;scan_connecting=1;test_fired=0;logline("action: select (add)");select_focused();}}
     if(pressed&ORBIS_PAD_BUTTON_TRIANGLE){logline("action: scan again");action("/api/scan");}
     if(pressed&CANCEL){ctx.add_step=ADD_TYPE;ctx.focus=ctx.add_type;}
    }else{ /* ADD_TEST */
@@ -261,6 +263,8 @@ int main(void){
    if(pressed&CANCEL)break;
   }
   ctx.online=online;
+  /* Sync overlay state after input so this frame renders the latest edit. */
+  ctx.pinmode=pinmode;ctx.digit=digit;memcpy(pin_buf,pin,5);
 
   {int target=(online&&l==LINK_STREAMING)?state.meter:0;if(target<0)target=0;if(target>100)target=100;
    if(target>meter_s)meter_s+=(target-meter_s+1)/2;else meter_s-=(meter_s-target+3)/4;}
