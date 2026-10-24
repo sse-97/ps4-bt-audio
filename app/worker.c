@@ -123,6 +123,11 @@ struct app {
     struct bta_auth auth;
     int (*getrandom)(void *, u64);
     u64 entropy; /* stirred by network timing; seeds the RNG fallback */
+    /* A lan-on/off request sets these under the lock; network_tick runs the
+     * resulting file write and TV notice after releasing it, so the real-time
+     * sender is never blocked on flash I/O while toggling phone control. */
+    int lan_act;
+    char lan_code[BTA_CODE_DIGITS + 1];
 };
 
 /* Fold an observation into the entropy pool. Cheap, called on network events so
@@ -855,8 +860,8 @@ static void dispatch(struct app *a, struct client *c) {
         } else if (exists(LAN_ON) && sc3(SYS_unlink, (long)LAN_ON, 0, 0) < 0) {
             response(c, "500 Internal Server Error", "text/plain", "Cannot save preference.", 23); return;
         }
-        char code[BTA_CODE_DIGITS + 1];
-        persist_lan(sync_lan(a, exists(LAN_ON), code), code);
+        /* In-memory only here; network_tick persists it after the lock drops. */
+        a->lan_act = sync_lan(a, exists(LAN_ON), a->lan_code);
         message(a, a->auth.enabled ? "Phone control is on. Enter the code shown on the TV." : "Phone control is off.");
     } else if (starts(c->input, "POST /api/scan HTTP/1.")) {
         if (a->streaming) { response(c, "409 Conflict", "text/plain", "Stop audio before scanning.", 27); return; }
@@ -975,7 +980,12 @@ static void network_tick(struct app *a, u64 now) {
             if (n > 0) {
                 c->used += (unsigned)n;
                 c->input[c->used] = 0;
-                if (find(c->input, "\r\n\r\n")) { lock_state(a); dispatch(a, c); unlock_state(a); }
+                if (find(c->input, "\r\n\r\n")) {
+                    lock_state(a); dispatch(a, c); unlock_state(a);
+                    /* A phone-control toggle leaves its file write and TV notice
+                     * here, outside the lock, so flash I/O can't stall the sender. */
+                    if (a->lan_act) { persist_lan(a->lan_act, a->lan_code); a->lan_act = 0; }
+                }
                 else if (c->used == sizeof(c->input) - 1) response(c, "431 Request Header Fields Too Large", "text/plain", "Request too large", 17);
             }
         }
