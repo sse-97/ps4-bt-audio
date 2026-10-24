@@ -106,7 +106,7 @@ footer{color:var(--muted);font-size:13px;line-height:1.7;margin:22px 2px;text-al
    <output id="vol-out" for="volume">40%</output>
   </div>
   <p class="sub" id="vol-note">0% mutes the headphones. TV volume is unchanged.</p>
-  <button class="primary" id="primary">Connect</button>
+  <button class="primary" id="primary" data-act="connect" disabled>Connect</button>
   <button data-act="test" id="test-btn" title="Play a short test tone">Test sound</button>
  </section>
 
@@ -176,14 +176,12 @@ footer{color:var(--muted);font-size:13px;line-height:1.7;margin:22px 2px;text-al
 
 <script>
 "use strict";
-// link states reported by the service: 0 idle, 1 connecting, 2 playing,
-// 3 lost (reconnecting), 4 failed (retrying), 5 searching.
+// link: 0 idle,1 connecting,2 playing,3 lost,4 failed,5 searching.
 var LINK=["Not connected","Connecting","Playing","Reconnecting","Can't connect","Searching"];
 var LCLS=["","warn","live","bad","bad","warn"];
 var LAT=["Lowest · least delay","Balanced","Most stable · fewest dropouts"];
 var latest=null,busy=false,exited=false,deviceKey="",quitArmed=0;
-// A failed-action notice stays until the next action, not wiped by the poll.
-var errSticky=false,lastTiming=0,prevBad=-1;
+var errSticky=false,lastTiming=0,prevBad=-1,choppyUntil=0,statusSeq=0,timingSeq=0,pollTimer=0,prevLat=-1;
 var token="";try{token=localStorage.getItem("bta_token")||"";}catch(e){}
 function $(id){return document.getElementById(id);}
 function note(t){$("notice").textContent=t||"";}
@@ -246,13 +244,22 @@ function hintFor(s,l,choppy){
  return null;
 }
 
+// Chain the next poll only after this one finishes, so slow round-trips
+// (congested Wi-Fi) never pile up or starve the UI.
+function scheduleNext(){clearTimeout(pollTimer);if(!exited)pollTimer=setTimeout(refresh,1200);}
 function refresh(){
- if(exited||busy)return;
+ if(exited)return;
+ if(busy){scheduleNext();return;}
+ // Ignore a stale poll once a newer one has started.
+ var my=++statusSeq;
  request("GET","/api/status",function(err,s,status){
+  if(my!==statusSeq||exited)return;
+  scheduleNext();
   if(status===401){showPairing(s);return;}
   hidePairing();
   if(err){
    $("state").textContent="Offline";$("state").className="pill bad";
+   var po=$("primary");po.dataset.act="connect";po.textContent="Connect";po.disabled=false;
    note("Start Bluetooth Audio from GoldHEN, then reload this page.");return;
   }
   if(!errSticky)note("");
@@ -262,16 +269,15 @@ function refresh(){
   var lv=typeof s.meter==="number"?s.meter:Math.min(100,s.level*100/32767);
   $("level").style.width=lv+"%";
   $("signal").textContent=
+   (l===2&&s.test)?"Playing a test tone…":
    l===2?(s.quiet_ms>3000?"Connected, but no sound from the PS4 yet":(lv>0?"Game audio is reaching the device":"Connected · waiting for game sound")):
    (s.message||(l===0?"Ready when you are":""));
   if(document.activeElement!==$("volume")){$("volume").value=s.volume;$("vol-out").textContent=s.volume+"%";}
-  // "active" = the service wants a device; stop cancels it, else connect.
   var active=s.wanted||l===1||l===2||l===3||l===5;
-  var p=$("primary");
+  var p=$("primary");p.disabled=false;
   if(active){p.dataset.act="stop";p.textContent=(l===2||l===3)?"Disconnect":"Stop";}
   else{p.dataset.act="connect";p.textContent="Connect";}
   $("test-btn").classList.toggle("hidden",l!==2);
-  // Scan and PIN.
   $("scan").textContent=s.scanning?"Scanning…":"Scan";
   $("pin-box").classList.toggle("hidden",!s.pin_pending);
   var key=JSON.stringify(s.devices)+s.selected;
@@ -287,25 +293,26 @@ function refresh(){
     o.textContent="No devices found — scan in pairing mode";sel.appendChild(o);
    }
   }
-  // TV sound and joint stereo.
   $("tv").textContent=s.streaming?(s.hdmi_muted?"Muted · device only":"On · TV and device"):
    (s.tv_enabled?"On · also plays on the device":"On · mutes when the device connects");
   setToggle("tv-btn",s.tv_enabled,s.tv_enabled?"Mute with device":"Keep TV on");
   $("joint").textContent=s.joint?"On for this device":"Off for this device";
   setToggle("joint-btn",s.joint,s.joint?"Turn off":"Turn on");
-  // Latency mode (segmented).
   var lm=typeof s.latency_mode==="number"?s.latency_mode:1;
   $("latency").textContent=LAT[lm]||LAT[1];
   for(var li=0;li<3;li++)$("lat"+li).className=(li===lm)?"primary":"";
+  // Changing latency is the user acting on a breakup: clear the hint and re-judge.
+  if(lm!==prevLat){choppyUntil=0;prevLat=lm;}
+  // Cumulative counters: keep the hint up a few seconds after each rise.
   var bad=(s.drops||0)+(s.underruns||0);
-  var choppy=l===2&&prevBad>=0&&bad>prevBad;prevBad=bad;
-  // Fix a problem.
+  if(l!==2){choppyUntil=0;prevBad=-1;}  // forget breakup across a reconnect
+  else{if(prevBad>=0&&bad>prevBad)choppyUntil=Date.now()+8000;prevBad=bad;}
+  var choppy=l===2&&Date.now()<choppyUntil;
   var h=hintFor(s,l,choppy);
   $("fix-text").textContent=h?h.t:(l===2?"Audio is playing normally.":"No problems detected.");
   var fb=$("fix-btn");
   if(h&&h.a){fb.textContent=h.a;fb.dataset.act=h.act;fb.classList.remove("hidden");}
   else fb.classList.add("hidden");
-  // Diagnostics counters.
   $("d-stream").textContent=s.streaming?"active":"idle";
   $("d-sendtype").textContent=s.joint?"joint stereo":"dual channel";
   $("d-packets").textContent=fmt(s.packets);
@@ -319,10 +326,11 @@ function fmt(n){return typeof n==="number"?n.toLocaleString("en-US"):"—";}
 function setToggle(id,on,label){var b=$(id);b.textContent=label;b.setAttribute("aria-pressed",on?"true":"false");}
 
 function loadTiming(){
- lastTiming=Date.now();
+ lastTiming=Date.now();var my=++timingSeq;
  request("GET","/api/timing",function(err,d){
+  if(my!==timingSeq)return;
   if(err||!d||!d.secs){$("d-late").textContent="—";return;}
-  var late=0;d.secs.forEach(function(r){late+=(r[5]||0);});// index 5 = late8 count
+  var late=0;d.secs.forEach(function(r){late+=(r[5]||0);});// r[5]=late8
   $("d-late").textContent=fmt(late);
  });
 }
@@ -362,7 +370,7 @@ $("quit").addEventListener("click",function(){
  quitArmed=setTimeout(function(){quitArmed=0;self.textContent="Shut down Bluetooth Audio";},3000);
 });
 
-refresh();setInterval(refresh,1200);
+refresh();
 </script>
 </body>
 </html>
