@@ -181,10 +181,13 @@ static void bez(const struct curve*k,float t,float*x,float*y){
 }
 #define NOY (-32768)
 #define BEZ_STEPS 4096
-/* The curve's y in each pixel column it crosses (all these curves run left to right). */
+/* The curve's y in each pixel column it crosses (all these curves run left to right).
+ * Left of its start the band's edge runs along the start height, so a band whose
+ * curves begin at different x closes smoothly instead of with a vertical edge. */
 static void wall_trace(const struct curve*k,short*col){
  for(int x=0;x<WIDTH;x++)col[x]=NOY;
  for(int i=0;i<=BEZ_STEPS;i++){float fx,fy;bez(k,(float)i/BEZ_STEPS,&fx,&fy);int x=(int)fx;if(x>=0&&x<WIDTH)col[x]=(short)fy;}
+ for(int x=0;x<WIDTH&&col[x]==NOY;x++)col[x]=(short)k->y0;
 }
 /* A faint band filling the space between two traced curves. */
 static void wall_band(const short*a,const short*b,unsigned alpha){
@@ -391,7 +394,7 @@ static void draw_latency(const struct ui_ctx*c){
 static const char*MENU_ITEMS[MENU_COUNT]={"Test Sound","Disconnect"};
 static void draw_menu(const struct ui_ctx*c){
  fill_a(0,140,1440,803,THEMES[ui_theme].mid,150);
- fill_a(1440,0,480,HEIGHT,0x000000,230);
+ fill_a(1440,0,480,HEIGHT,0x000000,245);
  for(int i=0;i<MENU_COUNT;i++){
   int y=440+i*78;
   if(c->menu_focus==i)focus_frame(1462,y,436,74);
@@ -466,7 +469,10 @@ static void draw(const struct ui_ctx*c){
  int sc=c->screen;if(sc<SCREEN_HOME||sc>SCREEN_LATENCY)sc=SCREEN_HOME;
  text(F_TITLE,106,112,sc==SCREEN_HOME?"Bluetooth Audio":sc==SCREEN_LATENCY?"Audio Latency":"Add Device",WHITE);
  fill_a(0,137,WIDTH,2,WHITE,128);
- if(sc==SCREEN_SCAN)draw_scan(c);
+ /* Offline, the Start dialog stands alone: a list behind it would show values the
+  * service never reported. */
+ if(!c->online){}
+ else if(sc==SCREEN_SCAN)draw_scan(c);
  else if(sc==SCREEN_TEST)draw_test(c);
  else if(sc==SCREEN_LATENCY)draw_latency(c);
  else draw_home(c);
