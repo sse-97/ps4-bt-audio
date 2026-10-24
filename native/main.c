@@ -312,6 +312,9 @@ int main(void){
    if(pressed&CANCEL)break;
   }
 
+  /* Sent, but no service ever answered (e.g. one still running holds the port
+   * yet can't be reached): say so rather than leave the dialog empty. */
+  if(starting&&!online&&notice[0]&&g_now>=notice_until)start_notice("The audio service didn't answer. Restart the PS4, then press Start.");
   if(notice[0]&&g_now>=notice_until)notice[0]=0;
   draw(&ctx);
   memcpy(buffers[buffer],back,sizeof(back));

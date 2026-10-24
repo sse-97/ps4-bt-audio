@@ -69,15 +69,19 @@ static int conn_give_up(u32 attempt) { return attempt > 4; }
 
 /* Rest-mode resume. The worker loop ticks well under a second apart; a gap
  * longer than this means the console slept and woke (or the process was frozen),
- * so the driver handle and the in-RAM firmware patch must be re-established.
- * This assumes the clock keeps counting across suspend: it is the PS4 process
- * time, which has not been confirmed on 13.52 to advance while the process is
- * frozen in rest mode. If it does not, this watchdog is a harmless no-op and the
- * stream-failure path (link_lost -> reconnect, which re-applies the patch) still
- * recovers, just more slowly. The final on-console test must confirm resume. */
+ * so the driver handle, the in-RAM firmware patch and every socket (rest mode
+ * aborts them) must be re-established. conn_resumed watches the process clock
+ * alone; on 13.52 that clock stops in rest mode (a connect attempt's 30 s timeout
+ * spanned 12 minutes of sleep), so conn_slept is what catches a real suspend. */
 #define CONN_RESUME_GAP_US 5000000UL
 static int conn_resumed(u64 last_tick, u64 now, u64 gap) {
     return last_tick && now > last_tick && now - last_tick > gap;
+}
+/* The wall clock runs on while the process sleeps: a tick whose wall-clock gap
+ * exceeds its process-clock gap by more than `gap` slept through rest mode. A
+ * wall clock set backwards never counts. */
+static int conn_slept(u64 proc_gap, u64 wall_gap, u64 gap) {
+    return wall_gap > proc_gap && wall_gap - proc_gap > gap;
 }
 
 /* The one place the connection's public state is decided (shown by every UI,

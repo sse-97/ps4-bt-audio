@@ -22,6 +22,16 @@ static inline int nonblock(long fd){int v=1;return sc3(54,fd,0x8004667e,(long)&v
 void notify(const char*message);
 void* bta_worker(void*);
 #define BTA_PORT 8097
+/* The control server's listening socket on BTA_PORT (all interfaces, non-blocking),
+ * or -1 when the port is taken. The launcher opens it; the worker opens it again
+ * after rest mode aborts it. */
+static inline long bta_listen(void){
+ long fd=sc3(97,2,1,0);if(fd<0)return -1;
+ int one=1;sc5(105,fd,0xffff,4,(long)&one,4);
+ struct sockaddr4 sa={.len=16,.family=2,.port=(BTA_PORT>>8)|((BTA_PORT&255)<<8)};
+ if(sc3(104,fd,(long)&sa,16)<0||sc3(106,fd,4,0)<0||nonblock(fd)<0){closefd(fd);return -1;}
+ return fd;
+}
 /* Control-API schema version. Bumped when the JSON shape or the set of
  * endpoints changes, so a client can tell an old service from a new one
  * independently of the release version. */
