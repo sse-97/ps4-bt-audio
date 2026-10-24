@@ -68,7 +68,10 @@ int bta_apply_patch(void);
 #define PAIR_COOLDOWN_US 30000000
 
 struct audio_req { u64 address; void *samples; u64 length; u32 mode, pad; };
-struct client { long fd; u64 deadline; u32 used, sent, total; int loopback; char input[2048]; char output[20000]; };
+/* A response is `total` bytes: the first `head` come from output (the header, and
+ * the body when it fits), the rest straight from `tail`, a constant body such as
+ * the page, which is larger than output. */
+struct client { long fd; u64 deadline; u32 used, sent, head, total; const char *tail; int loopback; char input[2048]; char output[20000]; };
 struct app {
     int (*sleep)(unsigned);
     u64 (*clock)(void);
@@ -865,7 +868,8 @@ static unsigned status(struct app *a, char *out, unsigned cap, int reveal) {
 static unsigned timing_json(struct app *a, char *out, unsigned cap) {
     return bta_timing_json(a->secs, a->sec_seq, (long)(a->clock() / 1000000), out, cap);
 }
-static void response(struct client *c, const char *code, const char *type, const char *body, unsigned n) {
+/* Write the response header for an n-byte body into output; returns its length. */
+static unsigned response_head(struct client *c, const char *code, const char *type, unsigned n) {
     struct writer w = {c->output, 0, sizeof(c->output)};
     append(&w, "HTTP/1.1 ");
     append(&w, code);
@@ -874,9 +878,22 @@ static void response(struct client *c, const char *code, const char *type, const
     append(&w, "\r\nContent-Length: ");
     number(&w, n);
     append(&w, "\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-ancestors 'none'\r\n\r\n");
-    if (w.used + n > sizeof(c->output)) { c->total = 0; return; }
-    memcpy(c->output + w.used, body, n);
-    c->total = w.used + n;
+    return w.used;
+}
+static void response(struct client *c, const char *code, const char *type, const char *body, unsigned n) {
+    unsigned h = response_head(c, code, type, n);
+    /* Never drop a reply silently: the client would wait out the deadline and see
+     * the connection closed with nothing. */
+    if (h + n > sizeof(c->output)) { response(c, "500 Internal Server Error", "text/plain", "Response too large.", 19); return; }
+    memcpy(c->output + h, body, n);
+    c->head = c->total = h + n;
+    c->tail = 0;
+}
+/* A constant body of any size (the page) goes out from where it lives, after the header. */
+static void response_const(struct client *c, const char *code, const char *type, const char *body, unsigned n) {
+    c->head = response_head(c, code, type, n);
+    c->tail = body;
+    c->total = c->head + n;
 }
 static char *header(char *request, const char *name) {
     char *p = find(request, "\r\n");
@@ -940,7 +957,7 @@ static void dispatch(struct app *a, struct client *c) {
     if (!host_valid(c->input)) { response(c, "403 Forbidden", "text/plain", "Use the PS4 IP address.", 23); return; }
     /* The page itself carries no state and must load so a LAN client can see the
      * pairing prompt; everything under /api is gated. */
-    if (starts(c->input, "GET / HTTP/1.")) { response(c, "200 OK", "text/html; charset=utf-8", web_page, sizeof(web_page) - 1); return; }
+    if (starts(c->input, "GET / HTTP/1.")) { response_const(c, "200 OK", "text/html; charset=utf-8", web_page, sizeof(web_page) - 1); return; }
     char token_hdr[BTA_TOKEN_HEX + 1];
     read_token(c->input, token_hdr);
     int authed = bta_auth_request_ok(&a->auth, c->loopback, token_hdr);
@@ -1102,7 +1119,7 @@ static void network_tick(struct app *a, u64 now) {
             if (len != 16 || !local_ip((u8 *)&peer.addr) || nonblock(fd) < 0) { closefd(fd); continue; }
             int one = 1;
             sc5(SYS_setsockopt, fd, 0xffff, 0x800, (long)&one, 4);
-            c->fd = fd; c->used = c->sent = c->total = 0; c->input[0] = 0; c->deadline = now + 3000000;
+            c->fd = fd; c->used = c->sent = c->head = c->total = 0; c->tail = 0; c->input[0] = 0; c->deadline = now + 3000000;
             c->loopback = (((u8 *)&peer.addr)[0] == 127); /* the console reaches us here */
             stir_entropy(a, a->clock() ^ ((u64)peer.addr << 16) ^ (u64)fd); /* feed the RNG fallback */
         }
@@ -1123,7 +1140,9 @@ static void network_tick(struct app *a, u64 now) {
             }
         }
         if (c->total) {
-            long n = sc3(SYS_write, c->fd, (long)(c->output + c->sent), c->total - c->sent);
+            int in_head = c->sent < c->head;
+            const char *from = in_head ? c->output + c->sent : c->tail + (c->sent - c->head);
+            long n = sc3(SYS_write, c->fd, (long)from, (in_head ? c->head : c->total) - c->sent);
             if (n > 0) c->sent += (unsigned)n;
             if (c->sent == c->total || (n < 0 && n != -35)) { closefd(c->fd); c->fd = -1; }
         }
