@@ -27,6 +27,7 @@ extern struct test_counts g_test;
 } while (0)
 
 void test_json(void);
+void test_model(void);
 void test_auth(void);
 void test_strfmt(void);
 void test_dsp(void);

@@ -20,13 +20,15 @@ out = root.parent / 'build/native'
 FONT_REG = 'DejaVuSans.ttf'
 FONT_SEMI = 'DejaVuSans-Bold.ttf'
 
-# name, file, pixel size. Sizes are native: nothing is ever pixel-doubled.
+# name, file, pixel size. Sizes are native (nothing is ever pixel-doubled) and
+# tuned for a 1920x1080 TV: body text is 30 px, well above the 28 px floor for
+# comfortable reading at couch distance.
 FACES = [
-    ('TITLE', FONT_SEMI, 40),
-    ('NAME', FONT_SEMI, 27),
-    ('BODY', FONT_REG, 23),
-    ('SMALL', FONT_REG, 20),
-    ('SMALLB', FONT_SEMI, 20),
+    ('TITLE', FONT_SEMI, 58),
+    ('NAME', FONT_SEMI, 38),
+    ('BODY', FONT_REG, 30),
+    ('SMALL', FONT_REG, 26),
+    ('SMALLB', FONT_SEMI, 26),
 ]
 GAMMA = 0.80  # <1 thickens light-on-dark text slightly so it stays crisp on TVs
 
@@ -197,18 +199,98 @@ def btn_triangle(size):
     return finish(im, size, size)
 
 
+def icon_plus(size):
+    im = mask_canvas(size, size)
+    d = ImageDraw.Draw(im)
+    S = size * SS
+    w = int(0.15 * S)
+    d.rounded_rectangle((0.5 * S - w / 2, 0.24 * S, 0.5 * S + w / 2, 0.76 * S), radius=int(w / 2), fill=255)
+    d.rounded_rectangle((0.24 * S, 0.5 * S - w / 2, 0.76 * S, 0.5 * S + w / 2), radius=int(w / 2), fill=255)
+    return finish(im, size, size)
+
+
+def icon_wrench(size):
+    """Open-ended spanner: a diagonal handle with a notched head."""
+    im = mask_canvas(size, size)
+    d = ImageDraw.Draw(im)
+    S = size * SS
+    w = int(0.17 * S)
+    d.line([(0.30 * S, 0.30 * S), (0.72 * S, 0.72 * S)], fill=255, width=w)
+    d.ellipse((0.72 * S - w / 2, 0.72 * S - w / 2, 0.72 * S + w / 2, 0.72 * S + w / 2), fill=255)
+    hx, hy, hr = 0.30 * S, 0.30 * S, 0.20 * S
+    d.ellipse((hx - hr, hy - hr, hx + hr, hy + hr), fill=255)       # head
+    d.ellipse((hx - hr * 0.5, hy - hr * 0.5, hx + hr * 0.5, hy + hr * 0.5), fill=0)  # bolt hole
+    d.polygon([(hx, hy), (hx - hr * 1.3, hy - hr * 0.35), (hx - hr * 0.35, hy - hr * 1.3)], fill=0)  # open jaw
+    return finish(im, size, size)
+
+
+def icon_phone(size):
+    im = mask_canvas(size, size)
+    d = ImageDraw.Draw(im)
+    S = size * SS
+    w = int(0.08 * S)
+    d.rounded_rectangle((0.30 * S, 0.14 * S, 0.70 * S, 0.86 * S), radius=int(0.10 * S), outline=255, width=w)
+    d.line([(0.44 * S, 0.22 * S), (0.56 * S, 0.22 * S)], fill=255, width=int(0.045 * S))  # earpiece
+    d.ellipse((0.47 * S, 0.74 * S, 0.53 * S, 0.80 * S), fill=255)                          # home dot
+    return finish(im, size, size)
+
+
+def icon_earbud(size):
+    """A single stemmed earbud, as a device-type glyph."""
+    im = mask_canvas(size, size)
+    d = ImageDraw.Draw(im)
+    S = size * SS
+    d.ellipse((0.34 * S, 0.14 * S, 0.66 * S, 0.50 * S), fill=255)                       # bud
+    d.rounded_rectangle((0.45 * S, 0.42 * S, 0.57 * S, 0.84 * S), radius=int(0.06 * S), fill=255)  # stem
+    return finish(im, size, size)
+
+
+def icon_speaker_box(size):
+    """A speaker/boombox: woofer + tweeter, as a device-type glyph."""
+    im = mask_canvas(size, size)
+    d = ImageDraw.Draw(im)
+    S = size * SS
+    w = int(0.07 * S)
+    d.rounded_rectangle((0.28 * S, 0.12 * S, 0.72 * S, 0.88 * S), radius=int(0.08 * S), outline=255, width=w)
+    d.ellipse((0.40 * S, 0.50 * S, 0.60 * S, 0.70 * S), outline=255, width=w)           # woofer
+    d.ellipse((0.46 * S, 0.24 * S, 0.54 * S, 0.32 * S), fill=255)                        # tweeter
+    return finish(im, size, size)
+
+
+def icon_gamepad(size):
+    im = mask_canvas(size, size)
+    d = ImageDraw.Draw(im)
+    S = size * SS
+    d.rounded_rectangle((0.12 * S, 0.34 * S, 0.88 * S, 0.66 * S), radius=int(0.15 * S), outline=255, width=int(0.07 * S))
+    dx, dy, a, bw = 0.33 * S, 0.50 * S, 0.06 * S, int(0.05 * S)       # d-pad
+    d.line([(dx - a, dy), (dx + a, dy)], fill=255, width=bw)
+    d.line([(dx, dy - a), (dx, dy + a)], fill=255, width=bw)
+    r = int(0.035 * S)                                                # face buttons
+    for ox, oy in ((-0.055, 0), (0.055, 0), (0, -0.055), (0, 0.055)):
+        cx, cy = 0.67 * S + ox * S, dy + oy * S
+        d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=255)
+    return finish(im, size, size)
+
+
 ICON_SPECS = [
-    ('HERO', lambda: icon_headphones(88)),
-    ('ROWHP', lambda: icon_headphones(30)),
-    ('GLOW', lambda: icon_glow(230)),
-    ('CHECK', lambda: icon_check(26)),
-    ('BANG', lambda: icon_bang(26)),
-    ('XMARK', lambda: icon_cross_mark(26)),
-    ('SPEAKER', lambda: icon_speaker(26)),
-    ('BCROSS', lambda: btn_cross(22)),
-    ('BCIRCLE', lambda: btn_circle(22)),
-    ('BSQUARE', lambda: btn_square(22)),
-    ('BTRI', lambda: btn_triangle(22)),
+    ('HERO', lambda: icon_headphones(132)),
+    ('ROWHP', lambda: icon_headphones(44)),
+    ('GLOW', lambda: icon_glow(345)),
+    ('CHECK', lambda: icon_check(38)),
+    ('BANG', lambda: icon_bang(38)),
+    ('XMARK', lambda: icon_cross_mark(38)),
+    ('SPEAKER', lambda: icon_speaker(38)),
+    ('ADD', lambda: icon_plus(44)),
+    ('WRENCH', lambda: icon_wrench(44)),
+    ('PAD', lambda: icon_gamepad(46)),
+    ('PHONE', lambda: icon_phone(40)),
+    ('TYPE_EARBUD', lambda: icon_earbud(84)),
+    ('TYPE_HP', lambda: icon_headphones(84)),
+    ('TYPE_SPK', lambda: icon_speaker_box(84)),
+    ('BCROSS', lambda: btn_cross(32)),
+    ('BCIRCLE', lambda: btn_circle(32)),
+    ('BSQUARE', lambda: btn_square(32)),
+    ('BTRI', lambda: btn_triangle(32)),
 ]
 
 
@@ -246,7 +328,7 @@ def build_icon512():
     return icon.resize((512, 512), Image.LANCZOS).convert('RGB')
 
 
-def build_logo_tile(icon, size=72, radius=16):
+def build_logo_tile(icon, size=108, radius=24):
     tile = icon.resize((size, size), Image.LANCZOS).convert('RGBA')
     m = Image.new('L', (size * SS, size * SS), 0)
     ImageDraw.Draw(m).rounded_rectangle((0, 0, size * SS - 1, size * SS - 1), radius=radius * SS, fill=255)
