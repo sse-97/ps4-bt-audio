@@ -98,8 +98,10 @@ static int refresh(void){
 static void notice_for(const char*s,uint64_t us){snprintf(notice,sizeof(notice),"%s",s);notice_until=g_now+us;}
 static void set_notice(const char*s){notice_for(s,6000000);}
 /* Why the service didn't start stays in the Start dialog until the next try or
- * until the service answers (the main loop clears it then). */
-static void start_notice(const char*s){notice_for(s,600000000);}
+ * until the service answers (the main loop clears it then). `starting` puts the
+ * busy indicator beside "Starting audio service..." meanwhile. */
+static int starting;
+static void start_notice(const char*s){notice_for(s,600000000);starting=0;}
 /* The audio service normally starts at boot (GoldHEN AutoRun). If it is not running
  * when the app opens, send the bundled payload to GoldHEN's local BinLoader (port 9090)
  * once. The payload's launcher refuses to start twice, and we only try while port 8097
@@ -119,7 +121,7 @@ static void start_service(void){
  int rc=write_all(fd,payload,used);close(fd);
  logline(rc?"start: send failed":"start: payload sent to BinLoader");
  if(rc)start_notice("Couldn't reach GoldHEN. Press Start to try again.");
- else notice_for("Starting audio service...",30000000);
+ else{notice_for("Starting audio service...",30000000);starting=1;}
 }
 /* POST an action, then refresh. 200 clears the notice; an error shows the
  * service's plain-text reason (error bodies are text, success bodies are JSON). */
@@ -197,7 +199,7 @@ int main(void){
  g_now=sceKernelGetProcessTime();
  logline("Checking audio service");refresh();start_service();
  logline("Starting display loop");
- unsigned previous=0;int buffer=0,armed=0;long flip=0;uint64_t poll=0,repeat=0,first_draw=0,snap_cd=0;
+ unsigned previous=0;int buffer=0,armed=0;long flip=0;uint64_t poll=0,repeat=0,first_draw=0,snap_cd=0,start_at=0;
  int pinignore=0,auto_snapped=0,scan_connecting=0;unsigned long scan_addr=0;
  for(;;){
   uint64_t now=sceKernelGetProcessTime();g_now=now;
@@ -212,11 +214,15 @@ int main(void){
    if(on_device){int n=home_count(&ctx);for(int k=0;k<n;k++)if(state.devices[home_dev(&ctx,k)].address==faddr){ctx.focus=k;break;}}
    else if(home)ctx.focus=fixed_row(fixed);
   }
+  /* Start shows "Starting audio service..." for a moment before it tries, so a
+   * try that fails at once still visibly happened before its reason returns. */
+  if(start_at&&now>=start_at){start_at=0;launch_attempted=0;refresh();start_service();}
   /* The Start dialog opens on its Start button each time the service goes away;
    * once the service answers, the dialog's start message has done its job. */
   if(ctx.online&&!online)ctx.dialog_focus=0;
-  if(!ctx.online&&online)notice[0]=0;
+  if(!ctx.online&&online){notice[0]=0;starting=0;}
   ctx.online=online;
+  ctx.busy=starting;
   /* Keep the cursor valid even when the device list changes between polls. */
   if(ctx.screen==SCREEN_HOME)clamp_home_focus();
   else if(ctx.screen==SCREEN_SCAN)clamp_scan_focus();
@@ -251,7 +257,12 @@ int main(void){
    if(pressed&CONFIRM){char path[40];snprintf(path,sizeof(path),"/api/pin/%s",pin_buf);logline("action: pin");action(path);ctx.pinmode=0;pinignore=1;}
   }else if(!online){ /* "The audio service isn't running." Start / Close */
    if(pressed&ORBIS_PAD_BUTTON_LEFT)ctx.dialog_focus=0;if(pressed&ORBIS_PAD_BUTTON_RIGHT)ctx.dialog_focus=1;
-   if(pressed&CONFIRM){if(ctx.dialog_focus)break;logline("action: start service");launch_attempted=0;refresh();start_service();}
+   if(pressed&CONFIRM){
+    if(ctx.dialog_focus)break;
+    /* Not again while a start is under way: a second payload would only report
+     * that the service is already running. */
+    if(!start_at&&!(starting&&notice[0])){logline("action: start service");start_at=now+800000;starting=1;notice_for("Starting audio service...",30000000);}
+   }
    if(pressed&CANCEL)break;
   }else if(ctx.dialog==DLG_STOP){ /* "Stop the audio service?" Stop / Cancel */
    if(pressed&ORBIS_PAD_BUTTON_LEFT)ctx.dialog_focus=0;if(pressed&ORBIS_PAD_BUTTON_RIGHT)ctx.dialog_focus=1;

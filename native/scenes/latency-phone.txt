@@ -1,0 +1,12 @@
+# Audio Latency while phone control is on: the choices sit beside the phone panel
+screen=3
+online=1
+link=2
+latency_mode=1
+lan=1
+pair_code=158607
+ip=10.0.0.5
+selected=aabbccddeeff
+dev=AirPods Pro|aabbccddeeff|1
+focus=1
+t=600

@@ -47,6 +47,8 @@ jobs:
             test -s "build/scenes/$name.ppm"
             echo "rendered $name"
           done
+          # The home-screen icon, for review next to the screens.
+          cp build/native/icon0.png build/scenes/icon0.png
 
       - uses: actions/upload-artifact@v4
         with:

@@ -43,6 +43,20 @@ enum conn_state {
 static int conn_send_type(int mode) { return mode == SBC_DUAL ? 3 : 4; }
 static int conn_other_mode(int mode) { return mode == SBC_DUAL ? SBC_JOINT : SBC_DUAL; }
 
+/* The driver's link state for a device (BT_LINK_STATE): 5 and 6 mean linked. */
+static int conn_link_up(long btstate) { return btstate >= 5 && btstate <= 6; }
+
+/* What a connect does with a link the driver already holds to the device. A link
+ * this service run dialled itself is reused (a rebuilt audio stream keeps it).
+ * Any other link, left by an earlier run or one just dropped that is still
+ * closing, can carry stale stream state: the PS4 accepts every audio packet but
+ * the device plays nothing. That one is dropped first and dialled fresh. */
+enum conn_link_plan { CONN_DIAL = 0, CONN_REUSE, CONN_DROP_FIRST };
+static enum conn_link_plan conn_plan_link(long btstate, int own) {
+    if (!conn_link_up(btstate)) return CONN_DIAL;
+    return own ? CONN_REUSE : CONN_DROP_FIRST;
+}
+
 /* Reconnect backoff after a failed attempt: 2, 4, 8, 16 s for attempts 1..4,
  * then 0, which means "stop retrying and ask the user". `attempt` counts
  * consecutive failures since the last successful stream (1 = the first). */

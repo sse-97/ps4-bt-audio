@@ -1,0 +1,6 @@
+# Start pressed: "Starting audio service..." with the busy indicator until the service answers
+screen=0
+online=0
+busy=1
+notice=Starting audio service...
+t=500

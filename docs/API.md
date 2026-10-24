@@ -25,6 +25,8 @@ LAN access is off until the owner turns **phone control** on at the console
 (the app's Settings, or by creating the flag file
 `/data/bta_audio/lan_on`). While it is on, the service shows a **six-digit
 pairing code** on the TV and also writes it to `/data/bta_audio/pair_code.txt`.
+The TV notice also names the console's address (`http://<PS4_IP>:8097`) when the
+service can tell it, and the app shows that address as a QR code next to the code.
 
 A LAN client pairs by posting the code and is handed a token:
 
@@ -77,7 +79,7 @@ client may reach without a token.
 | `POST /api/joint-on`, `/api/joint-off` | Joint-stereo SBC on/off for this device. |
 | `POST /api/latency/<0-2>` | Set the latency mode: 0 lowest, 1 balanced, 2 most stable. |
 | `POST /api/lan-on`, `/api/lan-off` | Turn phone control on/off (console only). |
-| `POST /api/quit` | Stop the service and restore TV sound. |
+| `POST /api/quit` | Stop the service, disconnect the device and restore TV sound. |
 
 A successful `POST` returns the same JSON as `GET /api/status`.
 
@@ -100,6 +102,7 @@ The important fields:
 | `tv_enabled`, `hdmi_muted` | TV-sound preference and current mute state. |
 | `name`, `selected`, `devices[]` | The chosen device and the listed audio devices. Each device has `address`, `name`, `audio` (1 if it advertises the audio service) and `known` (1 if it has played sound through the service before; the home-screen app lists only these on Home). |
 | `lan` | 1 if phone control is on. |
+| `ip` | The console's LAN address, e.g. `"192.168.1.97"`, while phone control is on. Absent when it is off or the address isn't known. |
 | `pair_code` | The current six-digit code. **Only present for console-local callers**, never in a LAN response. |
 
 Remaining fields (`drops`, `underruns`, `patch_rc`, `bt_state`, `relinks`,

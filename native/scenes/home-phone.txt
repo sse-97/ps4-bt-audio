@@ -1,0 +1,15 @@
+# Home with phone control on: the QR code, address and code on the left, the list moved right
+screen=0
+online=1
+link=2
+state=streaming
+volume=40
+latency_mode=1
+lan=1
+pair_code=158607
+ip=192.168.1.97
+selected=aabbccddeeff
+name=Libratone ONE
+dev=Libratone ONE|aabbccddeeff|1|1
+focus=5
+t=1200

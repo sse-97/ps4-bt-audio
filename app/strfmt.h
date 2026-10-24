@@ -30,6 +30,21 @@ static void mac_text(u64 address, char out[13]) {
     out[12] = 0;
 }
 
+/* Dotted-quad text of an IPv4 address held in network byte order (as in a
+ * sockaddr), e.g. "192.168.1.97". */
+static void ip_text(u32 addr, char out[16]) {
+    const u8 *b = (const u8 *)&addr;
+    unsigned n = 0;
+    for (int i = 0; i < 4; i++) {
+        unsigned v = b[i];
+        if (v >= 100) out[n++] = (char)('0' + v / 100);
+        if (v >= 10) out[n++] = (char)('0' + v / 10 % 10);
+        out[n++] = (char)('0' + v % 10);
+        if (i < 3) out[n++] = '.';
+    }
+    out[n] = 0;
+}
+
 /* Parse twelve hex digits of a MAC that must be followed by " HTTP/1." (so a
  * truncated or malformed request line is rejected). Returns 0 on any error. */
 static u64 parse_mac(const char *p) {

@@ -53,9 +53,11 @@ client and, **by default, can read nothing and change nothing**.
 
 To control audio from your phone, turn **phone control** on at the console (or create the
 file `/data/bta_audio/lan_on` over FTP). The service then shows a **six-digit pairing code**
-on the TV (also written to `/data/bta_audio/pair_code.txt`). Enter that code once in the
-browser on `http://<PS4_IP>:8097/`; the phone is remembered until the service restarts or you
-turn phone control off. Connections from outside your local network are always refused.
+on the TV (also written to `/data/bta_audio/pair_code.txt`), and while phone control is on
+the app shows a **QR code** for `http://<PS4_IP>:8097`, the address and the code on the left
+of its screen. Scan the QR code or open the address on your phone and enter the code once;
+the phone is remembered until the service restarts or you turn phone control off.
+Connections from outside your local network are always refused.
 
 The full JSON API — endpoints, the pairing flow and the status fields — is documented in
 [`docs/API.md`](docs/API.md).
@@ -108,10 +110,11 @@ also start after every jailbreak without opening the app, add the AutoRun entry 
    run **Package Installer** and install it. If an older version is installed, delete it from
    the home screen first (Options, Delete).
 3. Make sure GoldHEN's BinLoader is on: **Enable PayLoader Server** (port 9090) in GoldHEN's
-   Servers Settings. If it is off, the app's Start dialog says so. It accepts one payload per
-   jailbreak (any connection uses it up), so either let the app start the service **or**
-   send it from your PC with Option B, not both. Then open **Bluetooth Audio** from
-   the home screen. The app renders at 1080p like a PS4 Settings screen: the devices
+   Servers Settings. If it is off, the app's Start dialog says so. The PayLoader Server keeps
+   listening after a payload, so the app can start the service again later in the same
+   jailbreak; a second copy sent while the service runs only reports that it is already
+   running. Turning the PayLoader Server off doesn't affect a running service. Then open
+   **Bluetooth Audio** from the home screen. The app renders at 1080p like a PS4 Settings screen: the devices
    that have played sound through it before (others nearby are listed under **Add
    Device**), then **Add Device**, **Volume** (left/right to change it), **Keep TV Sound On**,
    **Audio Latency**, **Allow Phone Control** and **Stop Audio Service**. The confirm
@@ -119,15 +122,17 @@ also start after every jailbreak without opening the app, add the AutoRun entry 
    (**Test Sound**, **Disconnect**), as does the Options button. The cancel button
    closes the app. Confirm and cancel follow the console's enter-button setting (Cross
    in most regions, Circle in Japan). If the service isn't running, the app offers to
-   start it. The audio service keeps running after you close the app.
+   start it. The audio service keeps running after you close the app; **Stop Audio
+   Service** ends it and disconnects the device.
 4. If the service still doesn't start, check `/data/bta_audio/app.log` on the console, or send the
-   payload yourself with Option B below.
+   payload yourself with Option B below. For connection problems, `/data/bta_audio/service.log`
+   lists what the service did, step by step.
 
 ### Option B: payload only (no app)
 
 Send it from your PC without touching the PS4's file system. **Never open a bare connection
-to port 9090**: the loader treats any connection as a payload and stops listening until you
-reboot and re-jailbreak.
+to port 9090**: GoldHEN's PayLoader Server runs whatever arrives on a connection as a
+payload inside a system process.
 
 ```powershell
 python tools/deploy_variant.py BTA-Audio-2.8.0.bin --host <PS4_IP> --connect
@@ -153,6 +158,7 @@ python tools/install_bta.py --host <PS4_IP> --disable-autorun   # undo
 | `/data/bta_audio/latency.bin` | Saved latency mode (0 lowest, 1 balanced, 2 most stable) |
 | `/data/bta_audio/lan_on` | Create this empty file to allow phone control; delete it to lock the API to the console |
 | `/data/bta_audio/pair_code.txt` | The current six-digit pairing code, written while phone control is on |
+| `/data/bta_audio/service.log` | The service's log for this run: each status message and connection step, stamped with seconds since it started. `service-previous.log` keeps the run before |
 | `/data/bta_audio/stop` | Create this empty file over FTP to request a clean shutdown |
 | `/user/app/BTAD00001/` | Where the PKG installs the app (managed by the system) |
 

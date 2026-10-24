@@ -13,7 +13,8 @@ finish, on the target console after installing a release build.
   FTP access (port 2121) to the console.
 - **How to read results:** the web page at `http://<PS4_IP>:8097/` → **Diagnostics**, and the
   raw `GET /api/status` and `GET /api/timing` JSON, show the counters named below. The app
-  also writes `/data/bta_audio/app.log` and the service writes `status.json`.
+  also writes `/data/bta_audio/app.log`, and the service writes `status.json` and
+  `service.log` (its messages and connection steps).
 
 Tick each box. If anything fails, note the `message`, `state` and the relevant counters.
 
@@ -26,7 +27,7 @@ Tick each box. If anything fails, note the `message`, `state` and the relevant c
       sends the bundled payload to BinLoader (port 9090) once and the service comes up
       (`status.json` appears, the web page answers). `app.log` shows `payload sent to
       BinLoader`.
-- [ ] **Payload only (Option B).** On a fresh jailbreak (BinLoader unused), run
+- [ ] **Payload only (Option B).** With the service not running, run
       `tools/deploy_variant.py BTA-Audio-2.8.0.bin --host <PS4_IP> --connect`. The service
       reports `version 2.8.0`.
 - [ ] **AutoRun install.** `tools/install_bta.py --host <PS4_IP> --payload BTA-Audio-2.8.0.bin`
@@ -57,7 +58,7 @@ Tick each box. If anything fails, note the `message`, `state` and the relevant c
 - [ ] **Two remembered devices.** Pair a second headset. With both remembered, turning on
       either one first makes the service connect to that one ("connect to whichever is on").
 - [ ] **Disconnect restores TV.** Disconnect (web, or the app's Options menu) drops the link
-      and TV sound returns; the next connect starts fresh.
+      and TV sound returns; connecting again right away works on the first try.
 - [ ] **Backoff then give up.** With the headphones off, a connect attempt retries at ~2, 4, 8,
       16 s (watch `attempts`/`retry_ms`) and then stops with a "turn them on" message rather
       than retrying forever.
@@ -102,8 +103,11 @@ Tick each box. If anything fails, note the `message`, `state` and the relevant c
       returns **401** and the page shows the pairing prompt; no control is possible.
 - [ ] **Enable at console only.** Turn phone control on from the app (or create
       `/data/bta_audio/lan_on`). A six-digit code appears on the TV and in
-      `/data/bta_audio/pair_code.txt`. `/api/lan-on` from a LAN client is refused (console
-      only).
+      `/data/bta_audio/pair_code.txt`; the TV notice names `http://<PS4_IP>:8097`.
+      `/api/lan-on` from a LAN client is refused (console only).
+- [ ] **QR code.** While phone control is on, every app screen shows the QR code, the
+      address and the code on the left. Scanning the QR code with a phone opens the
+      pairing page.
 - [ ] **Pair and control.** Entering the code in the phone browser pairs it (token stored); it
       can then read status and control audio. A wrong code is rejected; ~10 wrong codes trigger
       a ~30 s cooldown that then clears.
@@ -117,9 +121,13 @@ Tick each box. If anything fails, note the `message`, `state` and the relevant c
 - [ ] **Settings rows.** Volume changes with left/right; **Keep TV Sound On** and **Allow
       Phone Control** toggle; **Audio Latency** sets the mode; the Options menu's **Test
       Sound** plays the tone.
-- [ ] **Stop Audio Service.** It asks first; **Stop** ends the service, the app then shows
-      "The audio service isn't running." and **Start** brings it back while BinLoader is
-      still unused this jailbreak.
+- [ ] **Stop Audio Service.** It asks first; **Stop** ends the service and disconnects the
+      device, the app then shows "The audio service isn't running." and **Start** shows
+      "Starting audio service..." with a spinner and brings it back, without a new
+      jailbreak.
+- [ ] **Sound after a restart.** Stop the service, wait a few minutes, start it again: the
+      remembered device reconnects and plays sound (`service.log` shows a fresh dial,
+      `connect: dial rc`, not a reused link).
 - [ ] **Theme and text.** The screens read clearly on the TV in the app's gray theme.
 - [ ] **Diagnostics.** The web Diagnostics panel and `/api/timing` show live packets, reconnects,
       resyncs, drops/underruns and late-packet counts.
@@ -129,6 +137,9 @@ Tick each box. If anything fails, note the `message`, `state` and the relevant c
       code of the system's close request.
 - [ ] **PayLoader off.** With GoldHEN's PayLoader Server off and the service stopped, the
       Start dialog says to turn it on; after turning it on, **Start** brings the service up.
+      Turning it off while the service runs changes nothing.
+- [ ] **Home-screen icon.** The app's tile is the white Bluetooth symbol on blue, like the
+      system's own apps.
 
 ## Known limitations / not verifiable here
 

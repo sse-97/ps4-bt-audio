@@ -14,7 +14,7 @@ void test_model(void) {
         "\"pin_pending\":0,\"test\":0,\"link\":2,\"attempts\":1,\"retry_ms\":0,"
         "\"meter\":58,\"quiet_ms\":0,\"connect_rc\":0,\"audio_rc\":0,\"lan\":1,"
         "\"latency_mode\":2,\"drops\":3,\"underruns\":1,\"state\":\"streaming\","
-        "\"pair_code\":\"048213\",\"selected\":\"aabbccddeeff\",\"name\":\"AirPods Pro\","
+        "\"pair_code\":\"048213\",\"ip\":\"192.168.1.97\",\"selected\":\"aabbccddeeff\",\"name\":\"AirPods Pro\","
         "\"devices\":[{\"address\":\"aabbccddeeff\",\"name\":\"AirPods Pro\",\"audio\":1,\"known\":1},"
         "{\"address\":\"112233445566\",\"name\":\"JBL Flip 6\",\"audio\":1}]}";
     struct ui_state s;
@@ -27,6 +27,7 @@ void test_model(void) {
     CHECK(!strcmp(s.message, "Playing on AirPods Pro"));
     CHECK(!strcmp(s.name, "AirPods Pro"));
     CHECK(!strcmp(s.pair_code, "048213"));
+    CHECK(!strcmp(s.ip, "192.168.1.97"));
     CHECK_EQ(s.latency_mode, 2);
     CHECK_EQ(s.drops, 3);
     CHECK_EQ(s.underruns, 1);
@@ -54,6 +55,7 @@ void test_model(void) {
     const char *lanbody = "{\"api\":3,\"link\":0,\"lan\":1,\"volume\":30,\"devices\":[]}";
     CHECK(model_parse(lanbody, &s) == 1);
     CHECK_EQ(s.pair_code[0], 0);
+    CHECK_EQ(s.ip[0], 0);   /* no address in the body: no phone panel */
     CHECK_EQ(s.count, 0);
     CHECK_EQ(s.volume, 30);
 
