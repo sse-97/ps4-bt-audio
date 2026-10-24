@@ -16,8 +16,11 @@ static void apply(const char *k, const char *v) {
     else if (!strcmp(k, "top")) ctx.top = atoi(v);
     else if (!strcmp(k, "online")) ctx.online = atoi(v);
     else if (!strcmp(k, "confirm_circle")) ctx.confirm_circle = atoi(v);
-    else if (!strcmp(k, "add_step")) ctx.add_step = atoi(v);
-    else if (!strcmp(k, "add_type")) ctx.add_type = atoi(v);
+    else if (!strcmp(k, "menu")) ctx.menu = atoi(v);
+    else if (!strcmp(k, "menu_focus")) ctx.menu_focus = atoi(v);
+    else if (!strcmp(k, "dialog")) ctx.dialog = atoi(v);
+    else if (!strcmp(k, "dialog_focus")) ctx.dialog_focus = atoi(v);
+    else if (!strcmp(k, "theme")) { int t = atoi(v); ui_theme = t >= 0 && t < 3 ? t : 0; }
     else if (!strcmp(k, "pin")) ctx.pinmode = atoi(v);
     else if (!strcmp(k, "pin_text")) snprintf(pin_text, sizeof(pin_text), "%s", v);
     else if (!strcmp(k, "pin_digit")) ctx.digit = atoi(v);
@@ -43,7 +46,6 @@ static void apply(const char *k, const char *v) {
     else if (!strcmp(k, "name")) snprintf(state.name, sizeof(state.name), "%s", v);
     else if (!strcmp(k, "state")) snprintf(state.conn_state, sizeof(state.conn_state), "%s", v);
     else if (!strcmp(k, "message")) snprintf(state.message, sizeof(state.message), "%s", v);
-    else if (!strcmp(k, "meter_s")) meter_s = atoi(v);
     else if (!strcmp(k, "t")) g_now = (uint64_t)atoll(v) * 1000u;
     else if (!strcmp(k, "notice")) snprintf(notice, sizeof(notice), "%s", v);
     else if (!strcmp(k, "dev")) {

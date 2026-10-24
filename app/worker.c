@@ -191,7 +191,7 @@ static void message(struct app *a, const char *s) {
     memcpy(a->message, s, n);
 }
 static const char *target_name(struct app *a) {
-    return a->target.name[0] ? a->target.name : "your headphones";
+    return a->target.name[0] ? a->target.name : "your audio device";
 }
 static void say(struct app *a, const char *pre, const char *suf) {
     char b[128];
@@ -287,7 +287,9 @@ static void link_lost(struct app *a) {
     a->state = CONN_RECOVERING; a->next_try = a->clock() + 2000000;
     say(a, "", " disconnected. TV sound is back. Reconnecting...");
     if (may_announce(a, 1)) {
-        notify("Bluetooth headphones disconnected. TV sound is back on. Reconnecting...");
+        char m[128];
+        compose(m, sizeof(m), "", target_name(a), " disconnected. TV sound is back on. Reconnecting...");
+        notify(m);
         a->announced = 1;
     }
 }
@@ -440,7 +442,7 @@ static void begin_connect(struct app *a) {
     }
     if (!bt_is_audio(t)) {
         a->wanted = 0; stop_audio(a); a->state = CONN_IDLE;
-        message(a, "This device does not advertise headphone audio support.");
+        message(a, "This device does not advertise Bluetooth audio playback.");
         return;
     }
     end_scan(a);
@@ -482,11 +484,15 @@ static void start_audio(struct app *a) {
     a->ok_at = a->stream_at; a->meter = 0; a->meter_peak = 0;
     say(a, "Connected to ", a->tv ? ". TV sound is on." : ". TV sound is muted.");
     if (was_dropped) {
-        if (told && may_announce(a, 2)) notify("Bluetooth headphones reconnected.");
+        if (told && may_announce(a, 2)) {
+            char m[96];
+            compose(m, sizeof(m), "", target_name(a), " reconnected.");
+            notify(m);
+        }
     } else if (fresh && may_announce(a, 0)) {
-        char m[200];
-        compose(m, sizeof(m), "Bluetooth headphones connected: ", target_name(a),
-                a->tv ? ". TV sound stays on." : ". TV sound muted.");
+        char m[128];
+        compose(m, sizeof(m), "Connected to ", target_name(a),
+                a->tv ? ". TV sound stays on." : ". TV sound is muted.");
         notify(m);
     }
 }
@@ -511,7 +517,7 @@ static void bluetooth_tick(struct app *a, u64 now) {
                  * stream back into the forbidden link-state poll. */
                 if (ev[i].address == a->target.address && a->wanted && !a->streaming) {
                     if (ev[i].type == 4) { u64 q[2] = {a->target.address, 1}; sc3(SYS_ioctl, a->bt, BT_PAIR_ACCEPT, (long)q); }
-                    if (ev[i].type == 3) { a->pin_pending = 1; a->state = CONN_PAIRING; a->deadline = now + 60000000; message(a, "These headphones require a pairing PIN."); }
+                    if (ev[i].type == 3) { a->pin_pending = 1; a->state = CONN_PAIRING; a->deadline = now + 60000000; message(a, "This device requires a pairing PIN."); }
                 }
     }
     if (!a->wanted) return;
@@ -622,7 +628,7 @@ static void audio_tick(struct app *a, u64 now) {
                 relink(a); return;
             } else if (a->relinks == 2) {
                 a->relinks++;
-                say(a, "The PS4 keeps refusing audio for ", ". Turn the headphones off and on.");
+                say(a, "The PS4 keeps refusing audio for ", ". Turn the device off and on.");
             }
         }
     } else if (a->last_rc > 0) {
@@ -904,7 +910,7 @@ static void dispatch(struct app *a, struct client *c) {
         if (!n || value > 100 || !starts(p + n, " HTTP/1.")) { response(c, "400 Bad Request", "text/plain", "Volume must be 0-100.", 21); return; }
         if (save_volume(a, (int)value)) { response(c, "500 Internal Server Error", "text/plain", "Cannot save volume.", 19); return; }
     } else if (starts(c->input, "POST /api/test HTTP/1.")) {
-        if (!a->streaming || a->bt < 0 || a->btstate < 5 || a->btstate > 6) { response(c, "409 Conflict", "text/plain", "Connect headphones first.", 25); return; }
+        if (!a->streaming || a->bt < 0 || a->btstate < 5 || a->btstate > 6) { response(c, "409 Conflict", "text/plain", "Connect a device first.", 23); return; }
         a->test_phase = 0; a->test_next = 0; a->test_until = a->clock() + 2000000; a->snap = 1;
         message(a, "Playing test tone.");
     } else if (starts(c->input, "POST /api/connect HTTP/1.")) {
@@ -922,21 +928,21 @@ static void dispatch(struct app *a, struct client *c) {
         closefd(a->bt); a->bt = -1;
         a->dropped = a->give_up = a->announced = a->session = 0;
         a->attempts = 0;
-        message(a, "Earbud audio stopped. TV sound restored.");
+        message(a, "Audio stopped. TV sound restored.");
     } else if (starts(c->input, "POST /api/joint-on HTTP/1.")) {
-        if (!a->target.address) { response(c, "409 Conflict", "text/plain", "Select headphones first.", 24); return; }
+        if (!a->target.address) { response(c, "409 Conflict", "text/plain", "Select a device first.", 22); return; }
         bta_profile_touch(&a->profiles, &a->target);
         bta_profile_set_mode(&a->profiles, a->target.address, SBC_JOINT);
         if (save_profiles(a)) { response(c, "500 Internal Server Error", "text/plain", "Cannot save preference.", 23); return; }
         a->mode = SBC_JOINT;
-        message(a, "Joint stereo is on for these headphones.");
+        message(a, "Joint stereo is on for this device.");
     } else if (starts(c->input, "POST /api/joint-off HTTP/1.")) {
-        if (!a->target.address) { response(c, "409 Conflict", "text/plain", "Select headphones first.", 24); return; }
+        if (!a->target.address) { response(c, "409 Conflict", "text/plain", "Select a device first.", 22); return; }
         bta_profile_touch(&a->profiles, &a->target);
         bta_profile_set_mode(&a->profiles, a->target.address, SBC_DUAL);
         if (save_profiles(a)) { response(c, "500 Internal Server Error", "text/plain", "Cannot save preference.", 23); return; }
         a->mode = SBC_DUAL;
-        message(a, "Joint stereo is off for these headphones.");
+        message(a, "Joint stereo is off for this device.");
     } else if (starts(c->input, "POST /api/latency/")) {
         const char *p = c->input + 18;
         if (p[0] < '0' || p[0] > '2' || !starts(p + 1, " HTTP/1.")) { response(c, "400 Bad Request", "text/plain", "Latency mode must be 0-2.", 25); return; }
@@ -1104,10 +1110,10 @@ void *bta_worker(void *arg) {
         /* A remembered device exists: reconnect to whichever one is turned on. */
         a.state = CONN_RECOVERING; a.next_try = 0;
         say(&a, "Reconnecting to ", "...");
-        notify("Bluetooth Audio is reconnecting to your headphones. Open the app or web controls to change the device or settings.");
+        notify("Bluetooth Audio is reconnecting to your last audio device. Open the app to change the device or settings.");
     } else {
-        message(&a, "Ready. Select your headphones and press Connect.");
-        notify("Bluetooth Audio is ready and idle. Open the home-screen app, then press Connect. Web controls: http://127.0.0.1:8097/ (or your PS4 IP on port 8097).");
+        message(&a, "Ready. Select an audio device to connect.");
+        notify("Bluetooth Audio is ready. Open the app to connect an audio device. Web controls: http://127.0.0.1:8097/ (or your PS4 IP on port 8097).");
     }
     init_lock(&a);
     start_sender(&a);

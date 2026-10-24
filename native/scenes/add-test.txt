@@ -1,8 +1,10 @@
-# Add headphones: test-tone confirmation step
-screen=1
-add_step=2
+# Add Device: the test tone is playing; Yes / No, Play Again / Disconnect
+screen=2
 link=2
 name=AirPods Pro
+selected=aabbccddeeff
+dev=AirPods Pro|aabbccddeeff|1
 test=1
+focus=0
 online=1
 t=600

@@ -1,0 +1,14 @@
+# Home: Stop Audio Service asks first; Cancel has focus
+screen=0
+online=1
+link=2
+volume=70
+tv=1
+latency_mode=2
+selected=aabbccddeeff
+dev=AirPods Pro|aabbccddeeff|1
+dev=JBL Flip 6|112233445566|1
+focus=7
+dialog=1
+dialog_focus=1
+t=600

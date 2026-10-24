@@ -1,12 +1,10 @@
-# Home: streaming to AirPods, phone control on (pair code shown), Most stable latency
+# Home: streaming to AirPods, TV sound kept, phone control on (code shown), Most Stable latency
 screen=0
 online=1
 link=2
 state=streaming
 volume=70
 tv=1
-meter=62
-meter_s=62
 latency_mode=2
 lan=1
 pair_code=048213

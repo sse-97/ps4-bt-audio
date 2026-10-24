@@ -1,0 +1,16 @@
+# Home: Options side menu open on the connected device (Test Sound focused)
+screen=0
+online=1
+link=2
+state=streaming
+volume=70
+tv=1
+latency_mode=2
+selected=aabbccddeeff
+name=AirPods Pro
+dev=AirPods Pro|aabbccddeeff|1
+dev=JBL Flip 6|112233445566|1
+focus=0
+menu=1
+menu_focus=0
+t=1200

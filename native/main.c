@@ -134,17 +134,27 @@ static void volume_change(int amount){
  char path[40];snprintf(path,sizeof(path),"/api/volume/%d",value);action(path);
 }
 
-/* ---- focus helpers ---- */
-static int home_ring(void){return state.count+2;}          /* devices + Add + Fix */
+/* ---- focus helpers: lists stop at their ends, like the system's ---- */
+static void scroll_to(int visible){
+ if(ctx.focus<ctx.top)ctx.top=ctx.focus;if(ctx.focus>=ctx.top+visible)ctx.top=ctx.focus-visible+1;if(ctx.top<0)ctx.top=0;
+}
 static void clamp_home_focus(void){
- int ring=home_ring();if(ctx.focus<0)ctx.focus=0;if(ctx.focus>=ring)ctx.focus=ring-1;
- if(ctx.focus<state.count){int vis=4;if(ctx.focus<ctx.top)ctx.top=ctx.focus;if(ctx.focus>=ctx.top+vis)ctx.top=ctx.focus-vis+1;if(ctx.top<0)ctx.top=0;if(ctx.top>state.count-1)ctx.top=state.count>0?state.count-1:0;}
- else ctx.top=0;
+ int n=home_rows(),last=n-HOME_VISIBLE;if(ctx.focus<0)ctx.focus=0;if(ctx.focus>=n)ctx.focus=n-1;
+ scroll_to(HOME_VISIBLE);if(last<0)last=0;if(ctx.top>last)ctx.top=last;
 }
 static void clamp_scan_focus(void){
  int n=state.count;if(n<=0){ctx.focus=0;ctx.top=0;return;}
- if(ctx.focus<0)ctx.focus=0;if(ctx.focus>=n)ctx.focus=n-1;
- int vis=5;if(ctx.focus<ctx.top)ctx.top=ctx.focus;if(ctx.focus>=ctx.top+vis)ctx.top=ctx.focus-vis+1;if(ctx.top<0)ctx.top=0;
+ if(ctx.focus<0)ctx.focus=0;if(ctx.focus>=n)ctx.focus=n-1;scroll_to(SCAN_VISIBLE);
+}
+static void go_home(int row){ctx.screen=SCREEN_HOME;ctx.menu=0;ctx.focus=row;clamp_home_focus();}
+/* Home row of the device the service has selected (the Add Device row if none). */
+static int selected_row(void){
+ for(int i=0;i<state.count;i++)if(state.devices[i].address==state.selected)return i;
+ return state.count+ROW_ADD;
+}
+static void step(int*value,unsigned pressed,int count){
+ if(pressed&ORBIS_PAD_BUTTON_DOWN)(*value)++;if(pressed&ORBIS_PAD_BUTTON_UP)(*value)--;
+ if(*value<0)*value=0;if(*value>=count)*value=count-1;
 }
 
 static unsigned char snaprow[WIDTH*3];
@@ -178,96 +188,107 @@ int main(void){
  logline("Checking audio service");refresh();start_service();
  logline("Starting display loop");
  unsigned previous=0;int buffer=0,armed=0;long flip=0;uint64_t poll=0,repeat=0,first_draw=0,snap_cd=0;
- int pinmode=0,pinignore=0,digit=0,auto_snapped=0,scan_connecting=0,test_fired=0;char pin[5]="0000";unsigned long scan_addr=0;
+ int pinignore=0,auto_snapped=0,scan_connecting=0;unsigned long scan_addr=0;
  for(;;){
   uint64_t now=sceKernelGetProcessTime();g_now=now;
   int l=online?(state.link>=LINK_IDLE&&state.link<=LINK_SEARCHING?state.link:LINK_IDLE):LINK_OFFLINE;
   if(now>=poll){
-   int remember=(ctx.screen==SCREEN_HOME&&ctx.focus<state.count)?1:0;unsigned long faddr=remember?state.devices[ctx.focus].address:0;
+   /* Keep focus on the same Home row across a refresh: the same device, or the
+    * same fixed row when the device list above it grows or shrinks. */
+   int home=ctx.screen==SCREEN_HOME,on_device=home&&ctx.focus<state.count,fixed=ctx.focus-state.count;
+   unsigned long faddr=on_device?state.devices[ctx.focus].address:0;
    refresh();poll=now+(!online?2000000:(l==LINK_STREAMING?300000:500000));
    l=online?(state.link>=LINK_IDLE&&state.link<=LINK_SEARCHING?state.link:LINK_IDLE):LINK_OFFLINE;
-   if(remember){for(int i=0;i<state.count;i++)if(state.devices[i].address==faddr){ctx.focus=i;break;}}
+   if(on_device){for(int i=0;i<state.count;i++)if(state.devices[i].address==faddr){ctx.focus=i;break;}}
+   else if(home)ctx.focus=state.count+fixed;
   }
+  /* The Start dialog opens on its Start button each time the service goes away. */
+  if(ctx.online&&!online)ctx.dialog_focus=0;
+  ctx.online=online;
   /* Keep the cursor valid even when the device list changes between polls. */
   if(ctx.screen==SCREEN_HOME)clamp_home_focus();
-  else if(ctx.screen==SCREEN_ADD&&ctx.add_step==ADD_SCAN)clamp_scan_focus();
-  else if(ctx.screen==SCREEN_ADD){if(ctx.focus<0||ctx.focus>2)ctx.focus=0;}
-  else if(ctx.screen==SCREEN_FIX){if(ctx.focus<0||ctx.focus>3)ctx.focus=0;}
-  /* The connect-and-wait only lives while we're on the scan step. */
-  if(!(ctx.screen==SCREEN_ADD&&ctx.add_step==ADD_SCAN))scan_connecting=0;
-  /* Auto-advance the Add flow to the test-tone step once the device the user
-   * chose here is actually playing (not some other device already streaming). */
+  else if(ctx.screen==SCREEN_SCAN)clamp_scan_focus();
+  /* The Options menu belongs to the connected device; it closes when that link ends. */
+  if(ctx.menu&&!focus_is_active(&ctx))ctx.menu=0;
+  /* The connect-and-wait only lives while we're on the search screen. */
+  if(ctx.screen!=SCREEN_SCAN)scan_connecting=0;
+  /* Move on to the test tone once the device the user chose here is actually
+   * playing (not some other device already streaming). */
   if(scan_connecting&&l==LINK_STREAMING&&scan_addr&&state.selected==scan_addr){
-   ctx.add_step=ADD_TEST;scan_connecting=0;if(!test_fired){action("/api/test");test_fired=1;}
+   ctx.screen=SCREEN_TEST;ctx.focus=TEST_YES;scan_connecting=0;logline("action: test (add)");action("/api/test");
   }
   /* PIN prompt rises and falls with the service flag. */
-  if(!state.pin_pending)pinignore=0;if(state.pin_pending&&!pinmode&&!pinignore){pinmode=1;digit=0;memcpy(pin,"0000",5);}
+  if(!state.pin_pending)pinignore=0;if(state.pin_pending&&!ctx.pinmode&&!pinignore){ctx.pinmode=1;ctx.digit=0;memcpy(pin_buf,"0000",5);}
 
   unsigned buttons=controller(now);
   if(!armed&&pad_connected){previous=buttons;armed=1;}
   unsigned pressed=buttons&~previous;
-  if(buttons==previous&&now>=repeat){pressed=buttons&(ORBIS_PAD_BUTTON_UP|ORBIS_PAD_BUTTON_DOWN|ORBIS_PAD_BUTTON_LEFT|ORBIS_PAD_BUTTON_RIGHT|ORBIS_PAD_BUTTON_L1|ORBIS_PAD_BUTTON_R1);repeat=now+150000;}
+  if(buttons==previous&&now>=repeat){pressed=buttons&(ORBIS_PAD_BUTTON_UP|ORBIS_PAD_BUTTON_DOWN|ORBIS_PAD_BUTTON_LEFT|ORBIS_PAD_BUTTON_RIGHT);repeat=now+150000;}
   else if(buttons!=previous)repeat=now+450000;
   previous=buttons;
   if(!armed)pressed=0;
 
   unsigned CONFIRM=ctx.confirm_circle?ORBIS_PAD_BUTTON_CIRCLE:ORBIS_PAD_BUTTON_CROSS;
   unsigned CANCEL =ctx.confirm_circle?ORBIS_PAD_BUTTON_CROSS :ORBIS_PAD_BUTTON_CIRCLE;
+  int d=ctx.digit;
 
-  if(pinmode){
-   if(pressed&ORBIS_PAD_BUTTON_LEFT)digit=(digit+3)%4;if(pressed&ORBIS_PAD_BUTTON_RIGHT)digit=(digit+1)%4;
-   if(pressed&ORBIS_PAD_BUTTON_UP)pin[digit]=(char)('0'+(pin[digit]-'0'+1)%10);if(pressed&ORBIS_PAD_BUTTON_DOWN)pin[digit]=(char)('0'+(pin[digit]-'0'+9)%10);
-   if(pressed&CANCEL){pinmode=0;pinignore=1;}
-   if(pressed&CONFIRM){char path[40];snprintf(path,sizeof(path),"/api/pin/%s",pin);logline("action: pin");action(path);pinmode=0;pinignore=1;}
-  }else if(ctx.screen==SCREEN_ADD){
-   if(ctx.add_step==ADD_TYPE){
-    if(pressed&ORBIS_PAD_BUTTON_LEFT)ctx.focus=(ctx.focus+2)%3;
-    if(pressed&ORBIS_PAD_BUTTON_RIGHT)ctx.focus=(ctx.focus+1)%3;
-    if(pressed&CONFIRM){ctx.add_type=ctx.focus;ctx.add_step=ADD_SCAN;ctx.focus=0;ctx.top=0;logline("action: scan (add)");action("/api/scan");}
-    if(pressed&CANCEL){ctx.screen=SCREEN_HOME;ctx.focus=state.count;clamp_home_focus();}
-   }else if(ctx.add_step==ADD_SCAN){
-    if(pressed&ORBIS_PAD_BUTTON_DOWN)ctx.focus++;if(pressed&ORBIS_PAD_BUTTON_UP)ctx.focus--;clamp_scan_focus();
-    if(pressed&CONFIRM){if(state.count>0&&ctx.focus>=0&&ctx.focus<state.count){scan_addr=state.devices[ctx.focus].address;scan_connecting=1;test_fired=0;logline("action: select (add)");select_focused();}}
-    if(pressed&ORBIS_PAD_BUTTON_TRIANGLE){logline("action: scan again");action("/api/scan");}
-    if(pressed&CANCEL){ctx.add_step=ADD_TYPE;ctx.focus=ctx.add_type;}
-   }else{ /* ADD_TEST */
-    if(pressed&CONFIRM){ctx.screen=SCREEN_HOME;ctx.focus=0;clamp_home_focus();}
-    if(pressed&ORBIS_PAD_BUTTON_TRIANGLE){logline("action: test again");action("/api/test");if(!notice[0])testing_until=g_now+2200000;}
-    if(pressed&CANCEL){ctx.screen=SCREEN_FIX;ctx.focus=0;}
-   }
-  }else if(ctx.screen==SCREEN_FIX){
-   if(pressed&ORBIS_PAD_BUTTON_DOWN)ctx.focus=(ctx.focus+1)%4;if(pressed&ORBIS_PAD_BUTTON_UP)ctx.focus=(ctx.focus+3)%4;
+  if(ctx.pinmode){
+   if(pressed&ORBIS_PAD_BUTTON_LEFT)ctx.digit=(d+3)%4;if(pressed&ORBIS_PAD_BUTTON_RIGHT)ctx.digit=(d+1)%4;
+   if(pressed&ORBIS_PAD_BUTTON_UP)pin_buf[d]=(char)('0'+(pin_buf[d]-'0'+1)%10);if(pressed&ORBIS_PAD_BUTTON_DOWN)pin_buf[d]=(char)('0'+(pin_buf[d]-'0'+9)%10);
+   if(pressed&CANCEL){ctx.pinmode=0;pinignore=1;}
+   if(pressed&CONFIRM){char path[40];snprintf(path,sizeof(path),"/api/pin/%s",pin_buf);logline("action: pin");action(path);ctx.pinmode=0;pinignore=1;}
+  }else if(!online){ /* "The audio service isn't running." Start / Close */
+   if(pressed&ORBIS_PAD_BUTTON_LEFT)ctx.dialog_focus=0;if(pressed&ORBIS_PAD_BUTTON_RIGHT)ctx.dialog_focus=1;
+   if(pressed&CONFIRM){if(ctx.dialog_focus)break;logline("action: start service");launch_attempted=0;refresh();start_service();}
+   if(pressed&CANCEL)break;
+  }else if(ctx.dialog==DLG_STOP){ /* "Stop the audio service?" Stop / Cancel */
+   if(pressed&ORBIS_PAD_BUTTON_LEFT)ctx.dialog_focus=0;if(pressed&ORBIS_PAD_BUTTON_RIGHT)ctx.dialog_focus=1;
+   if(pressed&CONFIRM){ctx.dialog=DLG_NONE;if(!ctx.dialog_focus){logline("action: quit");action("/api/quit");}}
+   if(pressed&CANCEL)ctx.dialog=DLG_NONE;
+  }else if(ctx.menu){
+   step(&ctx.menu_focus,pressed,MENU_COUNT);
    if(pressed&CONFIRM){
-    if(ctx.focus==0){logline("fix: test");action("/api/test");if(!notice[0])testing_until=g_now+2200000;}
-    else if(ctx.focus==1){int nm=(lat_mode()+1)%3;char path[32];snprintf(path,sizeof(path),"/api/latency/%d",nm);logline("fix: latency");action(path);}
-    else if(ctx.focus==2){ctx.screen=SCREEN_ADD;ctx.add_step=ADD_SCAN;ctx.focus=0;ctx.top=0;logline("fix: scan");action("/api/scan");}
+    ctx.menu=0;
+    if(ctx.menu_focus==MENU_TEST){logline("action: test");action("/api/test");}
+    else{logline("action: disconnect");action("/api/stop");}
    }
-   if(pressed&CANCEL){ctx.screen=SCREEN_HOME;ctx.focus=state.count+1;clamp_home_focus();}
+   if(pressed&(CANCEL|ORBIS_PAD_BUTTON_OPTIONS))ctx.menu=0;
+  }else if(ctx.screen==SCREEN_SCAN){
+   step(&ctx.focus,pressed,state.count);clamp_scan_focus();
+   if(pressed&CONFIRM){if(state.count>0&&ctx.focus>=0&&ctx.focus<state.count){scan_addr=state.devices[ctx.focus].address;scan_connecting=1;logline("action: select (add)");select_focused();}}
+   if(pressed&ORBIS_PAD_BUTTON_TRIANGLE){logline("action: scan again");action("/api/scan");}
+   if(pressed&CANCEL)go_home(state.count+ROW_ADD);
+  }else if(ctx.screen==SCREEN_TEST){
+   step(&ctx.focus,pressed,TEST_COUNT);
+   if(pressed&CONFIRM){
+    if(ctx.focus==TEST_AGAIN){logline("action: test again");action("/api/test");}
+    else if(ctx.focus==TEST_DISCONNECT){logline("action: disconnect (add)");action("/api/stop");go_home(state.count+ROW_ADD);}
+    else go_home(selected_row());
+   }
+   if(pressed&CANCEL)go_home(selected_row());
+  }else if(ctx.screen==SCREEN_LATENCY){
+   step(&ctx.focus,pressed,3);
+   if(pressed&CONFIRM){char path[32];snprintf(path,sizeof(path),"/api/latency/%d",ctx.focus);logline("action: latency");action(path);go_home(state.count+ROW_LATENCY);}
+   if(pressed&CANCEL)go_home(state.count+ROW_LATENCY);
   }else{ /* SCREEN_HOME */
-   if(pressed&ORBIS_PAD_BUTTON_DOWN)ctx.focus=(ctx.focus+1)%home_ring();
-   if(pressed&ORBIS_PAD_BUTTON_UP)ctx.focus=(ctx.focus+home_ring()-1)%home_ring();
-   clamp_home_focus();
+   step(&ctx.focus,pressed,home_rows());clamp_home_focus();
+   int row=ctx.focus-state.count;
+   if(row==ROW_VOLUME){if(pressed&ORBIS_PAD_BUTTON_LEFT)volume_change(-5);if(pressed&ORBIS_PAD_BUTTON_RIGHT)volume_change(5);}
+   if(pressed&ORBIS_PAD_BUTTON_OPTIONS&&focus_is_active(&ctx)){ctx.menu=1;ctx.menu_focus=MENU_TEST;}
    if(pressed&CONFIRM){
-    if(!online){launch_attempted=0;refresh();start_service();}
-    else if(ctx.focus<state.count){
-     if(state.devices[ctx.focus].address==state.selected&&l!=LINK_IDLE){logline("action: disconnect");action("/api/stop");}
+    if(row<0){
+     /* The connected device opens its Options menu; any other device connects. */
+     if(focus_is_active(&ctx)){ctx.menu=1;ctx.menu_focus=MENU_TEST;}
      else{logline("action: connect");select_focused();}
-    }else if(ctx.focus==state.count){ctx.screen=SCREEN_ADD;ctx.add_step=ADD_TYPE;ctx.focus=ctx.add_type;}
-    else{ctx.screen=SCREEN_FIX;ctx.focus=0;}
+    }else if(row==ROW_ADD){ctx.screen=SCREEN_SCAN;ctx.focus=0;ctx.top=0;logline("action: scan (add)");action("/api/scan");}
+    else if(row==ROW_TV){logline("action: tv");action(state.tv?"/api/tv-off":"/api/tv-on");}
+    else if(row==ROW_LATENCY){ctx.screen=SCREEN_LATENCY;ctx.focus=lat_mode();}
+    else if(row==ROW_PHONE){logline("action: phone control");action(state.lan?"/api/lan-off":"/api/lan-on");}
+    else if(row==ROW_STOP){ctx.dialog=DLG_STOP;ctx.dialog_focus=1;}
    }
-   if(pressed&ORBIS_PAD_BUTTON_TRIANGLE){ctx.screen=SCREEN_ADD;ctx.add_step=ADD_TYPE;ctx.focus=ctx.add_type;}
-   if(pressed&ORBIS_PAD_BUTTON_SQUARE){logline("action: tv");action(state.tv?"/api/tv-off":"/api/tv-on");}
-   if(pressed&ORBIS_PAD_BUTTON_OPTIONS){logline("action: test");action("/api/test");if(!notice[0])testing_until=g_now+2200000;}
-   if(pressed&(ORBIS_PAD_BUTTON_L1|ORBIS_PAD_BUTTON_LEFT))volume_change(-5);
-   if(pressed&(ORBIS_PAD_BUTTON_R1|ORBIS_PAD_BUTTON_RIGHT))volume_change(5);
    if(pressed&CANCEL)break;
   }
-  ctx.online=online;
-  /* Sync overlay state after input so this frame renders the latest edit. */
-  ctx.pinmode=pinmode;ctx.digit=digit;memcpy(pin_buf,pin,5);
 
-  {int target=(online&&l==LINK_STREAMING)?state.meter:0;if(target<0)target=0;if(target>100)target=100;
-   if(target>meter_s)meter_s+=(target-meter_s+1)/2;else meter_s-=(meter_s-target+3)/4;}
   if(notice[0]&&g_now>=notice_until)notice[0]=0;
   draw(&ctx);
   memcpy(buffers[buffer],back,sizeof(back));
