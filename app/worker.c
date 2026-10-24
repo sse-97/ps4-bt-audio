@@ -18,6 +18,7 @@
 #include "web_page.h"
 #include "protocol.h"
 #include "json.h"
+#include "auth.h"
 #include "strfmt.h"
 #include "dsp.h"
 #include "core.h"
@@ -55,9 +56,12 @@ int bta_apply_patch(void);
 #define PRIME_US 2000000
 /* Automatic recovery threshold: the PS4 refused every packet for this long. */
 #define REFUSED_US 4000000
+/* After BTA_MAX_PAIR_FAILS wrong pairing codes, reject further attempts for this
+ * long. Rate-limits a LAN brute force without a permanent lockout. */
+#define PAIR_COOLDOWN_US 30000000
 
 struct audio_req { u64 address; void *samples; u64 length; u32 mode, pad; };
-struct client { long fd; u64 deadline; u32 used, sent, total; char input[2048]; char output[20000]; };
+struct client { long fd; u64 deadline; u32 used, sent, total; int loopback; char input[2048]; char output[20000]; };
 struct app {
     int (*sleep)(unsigned);
     u64 (*clock)(void);
@@ -106,7 +110,60 @@ struct app {
     int scanning, pin_pending;
     u64 scan_end, list_at;
     struct client clients[4];
+    /* LAN access control (see auth.h). The console reaches the service over the
+     * loopback address and always has full access; LAN clients must pair. */
+    struct bta_auth auth;
+    int (*getrandom)(void *, u64);
+    u64 entropy; /* stirred by network timing; seeds the RNG fallback */
 };
+
+/* Fold an observation into the entropy pool. Cheap, called on network events so
+ * the fallback RNG below depends on real, attacker-unobservable runtime timing. */
+static void stir_entropy(struct app *a, u64 x) {
+    a->entropy = (a->entropy ^ x) * 0x100000001b3UL; /* FNV-style mix */
+    a->entropy ^= a->entropy >> 29;
+}
+/* Fill buf with n random bytes. Uses the kernel RNG when available; otherwise an
+ * xorshift seeded from the entropy pool and fresh clock reads. The fallback is a
+ * defence in depth — sceKernelGetRandomNumber is expected to resolve on 13.52. */
+static void fill_random(struct app *a, u8 *buf, unsigned n) {
+    if (a->getrandom && n <= 64 && a->getrandom(buf, n) == 0) return;
+    u64 x = a->entropy ^ a->clock() ^ ((u64)(unsigned long)buf) ^ 0x9e3779b97f4a7c15UL;
+    for (unsigned i = 0; i < n; i++) {
+        x += a->clock();
+        x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+        buf[i] = (u8)(x >> 24);
+    }
+    a->entropy ^= x;
+}
+/* Reconcile the in-memory auth with the LAN_ON flag `on`. Memory only: on a
+ * transition it reports what the caller must persist, so the file write (and the
+ * TV notification) happen outside the state lock. Returns 1 when phone control
+ * just turned on (new code copied to `code`), -1 when it just turned off, else 0. */
+static int sync_lan(struct app *a, int on, char code[BTA_CODE_DIGITS + 1]) {
+    code[0] = 0;
+    if (on && !a->auth.enabled) {
+        u8 r[4];
+        fill_random(a, r, sizeof(r));
+        bta_auth_enable(&a->auth, r);
+        for (int i = 0; i <= BTA_CODE_DIGITS; i++) code[i] = a->auth.code[i];
+        return 1;
+    }
+    if (!on && a->auth.enabled) { bta_auth_disable(&a->auth); return -1; }
+    return 0;
+}
+/* Act on what sync_lan reported, with no lock held: write or remove the code
+ * file and announce the code on the TV. */
+static void persist_lan(int act, const char *code) {
+    if (act == 1) {
+        put(PAIR_CODE, code, BTA_CODE_DIGITS);
+        char m[96];
+        compose(m, sizeof(m), "Phone control is on. Pairing code: ", code, ". Enter it in your phone's browser.");
+        notify(m);
+    } else if (act == -1) {
+        sc3(SYS_unlink, (long)PAIR_CODE, 0, 0);
+    }
+}
 
 static void lock_state(struct app *a) { if (a->mlock) a->mlock(&a->mutex); }
 static void unlock_state(struct app *a) { if (a->munlock) a->munlock(&a->mutex); }
@@ -496,10 +553,15 @@ static int retry_in_ms(struct app *a, u64 now) {
 static int quiet_for_ms(struct app *a, u64 now) {
     return bta_quiet_for_ms(a->streaming, a->ok_at, now);
 }
-static unsigned status(struct app *a, char *out, unsigned cap) {
+/* reveal: include the live pairing code. Set only for a loopback HTTP request,
+ * so a future console app can read it; never for a LAN response, and never for
+ * the on-disk status.json (pair_code.txt is the one file that holds the code). */
+static unsigned status(struct app *a, char *out, unsigned cap, int reveal) {
     u64 now = a->clock();
     struct writer w = {out, 0, cap};
-    append(&w, "{\"version\":\"2.7.5\",\"message\":");
+    append(&w, "{\"version\":\"2.7.5\",\"api\":");
+    number(&w, BTA_API_VERSION);
+    append(&w, ",\"message\":");
     quoted(&w, a->message);
     field(&w, "sender", a->sender_alive);
     field(&w, "sender_prio", a->sender_prio);
@@ -539,6 +601,11 @@ static unsigned status(struct app *a, char *out, unsigned cap) {
     field(&w, "bt_state", a->btstate);
     field(&w, "no_widen", exists(NO_WIDEN));
     field(&w, "uptime_us", a->clock());
+    field(&w, "lan", a->auth.enabled);
+    if (reveal && a->auth.enabled) {
+        append(&w, ",\"pair_code\":");
+        quoted(&w, a->auth.code);
+    }
     char mac[13];
     mac_text(a->target.address, mac);
     append(&w, ",\"selected\":");
@@ -629,19 +696,90 @@ static int host_valid(char *request) {
     }
     return local_ip(ip) && starts(p, ":8097\r\n");
 }
+/* Copy the X-BTA-Token header value (hex, up to a token's length) into a
+ * NUL-terminated buffer. The raw header value runs up to a CR, so it must be
+ * bounded here before any string compare. */
+static void read_token(char *request, char out[BTA_TOKEN_HEX + 1]) {
+    out[0] = 0;
+    char *v = header(request, "x-bta-token");
+    if (!v) return;
+    unsigned n = 0;
+    while (n < BTA_TOKEN_HEX && ((v[n] >= '0' && v[n] <= '9') || (v[n] >= 'a' && v[n] <= 'f'))) { out[n] = v[n]; n++; }
+    out[n] = 0;
+}
+/* A LAN client with no (or a stale) token: tell it, in JSON, whether pairing is
+ * even possible so the page can prompt for the code or ask the owner to turn
+ * phone control on at the console. */
+static void needs_pairing(struct app *a, struct client *c) {
+    char body[48];
+    struct writer w = {body, 0, sizeof(body)};
+    append(&w, "{\"api\":");
+    number(&w, BTA_API_VERSION);
+    append(&w, ",\"paired\":false");
+    field(&w, "lan", a->auth.enabled);
+    append(&w, "}");
+    response(c, "401 Unauthorized", "application/json", body, w.used);
+}
 static void dispatch(struct app *a, struct client *c) {
     char body[12000];
     if (!host_valid(c->input)) { response(c, "403 Forbidden", "text/plain", "Use the PS4 IP address.", 23); return; }
+    /* The page itself carries no state and must load so a LAN client can see the
+     * pairing prompt; everything under /api is gated. */
     if (starts(c->input, "GET / HTTP/1.")) { response(c, "200 OK", "text/html; charset=utf-8", web_page, sizeof(web_page) - 1); return; }
-    if (starts(c->input, "GET /api/native HTTP/1.")) { unsigned n = native_status(a, body); response(c, "200 OK", "application/octet-stream", body, n); return; }
-    if (starts(c->input, "GET /api/status HTTP/1.")) { unsigned n = status(a, body, sizeof(body)); response(c, "200 OK", "application/json", body, n); return; }
-    if (starts(c->input, "GET /api/timing HTTP/1.")) { unsigned n = timing_json(a, body, sizeof(body)); response(c, "200 OK", "application/json", body, n); return; }
+    char token_hdr[BTA_TOKEN_HEX + 1];
+    read_token(c->input, token_hdr);
+    int authed = bta_auth_request_ok(&a->auth, c->loopback, token_hdr);
+    /* Pairing: a LAN client posts the code shown on the TV and is handed a token.
+     * Open to unpaired clients by design; still needs the anti-CSRF header. */
+    if (starts(c->input, "POST /api/pair/")) {
+        char *control = header(c->input, "x-bta-control");
+        if (!control || !starts(control, "1\r\n")) { response(c, "403 Forbidden", "text/plain", "Control header required.", 24); return; }
+        char code[BTA_CODE_DIGITS + 1];
+        const char *p = c->input + 15;
+        for (int i = 0; i < BTA_CODE_DIGITS; i++) {
+            if (p[i] < '0' || p[i] > '9') { response(c, "400 Bad Request", "text/plain", "Enter the six-digit code.", 25); return; }
+            code[i] = p[i];
+        }
+        code[BTA_CODE_DIGITS] = 0;
+        if (!starts(p + BTA_CODE_DIGITS, " HTTP/1.")) { response(c, "400 Bad Request", "text/plain", "Enter the six-digit code.", 25); return; }
+        u8 rnd[16];
+        char token[BTA_TOKEN_HEX + 1], issued[BTA_TOKEN_HEX + 1];
+        fill_random(a, rnd, sizeof(rnd));
+        bta_auth_make_token(issued, rnd);
+        int rc = bta_auth_pair(&a->auth, code, issued, token, a->clock(), PAIR_COOLDOWN_US);
+        if (rc < 0) { response(c, "403 Forbidden", "text/plain", "Phone control is off or locked. Enable it on the console.", 57); return; }
+        if (rc == 0) { response(c, "403 Forbidden", "text/plain", "Wrong code. Check the code on the TV.", 37); return; }
+        struct writer w = {body, 0, sizeof(body)};
+        append(&w, "{\"api\":");
+        number(&w, BTA_API_VERSION);
+        append(&w, ",\"paired\":true,\"token\":");
+        quoted(&w, token);
+        append(&w, "}");
+        response(c, "200 OK", "application/json", body, w.used);
+        return;
+    }
+    if (starts(c->input, "GET /api/native HTTP/1.")) { if (!authed) { needs_pairing(a, c); return; } unsigned n = native_status(a, body); response(c, "200 OK", "application/octet-stream", body, n); return; }
+    if (starts(c->input, "GET /api/status HTTP/1.")) { if (!authed) { needs_pairing(a, c); return; } unsigned n = status(a, body, sizeof(body), c->loopback); response(c, "200 OK", "application/json", body, n); return; }
+    if (starts(c->input, "GET /api/timing HTTP/1.")) { if (!authed) { needs_pairing(a, c); return; } unsigned n = timing_json(a, body, sizeof(body)); response(c, "200 OK", "application/json", body, n); return; }
     char *control = header(c->input, "x-bta-control");
     if (!starts(c->input, "POST ") || !control || !starts(control, "1\r\n")) {
         response(c, "403 Forbidden", "text/plain", "Control header required.", 24);
         return;
     }
-    if (starts(c->input, "POST /api/scan HTTP/1.")) {
+    if (!authed) { needs_pairing(a, c); return; }
+    /* Changing who can reach the service is a console-only action: a paired
+     * phone must not be able to widen access or lock the owner out. */
+    if (starts(c->input, "POST /api/lan-on HTTP/1.") || starts(c->input, "POST /api/lan-off HTTP/1.")) {
+        if (!c->loopback) { response(c, "403 Forbidden", "text/plain", "Change phone control at the console.", 36); return; }
+        if (starts(c->input, "POST /api/lan-on HTTP/1.")) {
+            if (put(LAN_ON, "on\n", 3)) { response(c, "500 Internal Server Error", "text/plain", "Cannot save preference.", 23); return; }
+        } else if (exists(LAN_ON) && sc3(SYS_unlink, (long)LAN_ON, 0, 0) < 0) {
+            response(c, "500 Internal Server Error", "text/plain", "Cannot save preference.", 23); return;
+        }
+        char code[BTA_CODE_DIGITS + 1];
+        persist_lan(sync_lan(a, exists(LAN_ON), code), code);
+        message(a, a->auth.enabled ? "Phone control is on. Enter the code shown on the TV." : "Phone control is off.");
+    } else if (starts(c->input, "POST /api/scan HTTP/1.")) {
         if (a->streaming) { response(c, "409 Conflict", "text/plain", "Stop audio before scanning.", 27); return; }
         if (scan(a)) { response(c, "503 Service Unavailable", "text/plain", "Scan could not start", 20); return; }
     } else if (starts(c->input, "POST /api/select/")) {
@@ -733,7 +871,7 @@ static void dispatch(struct app *a, struct client *c) {
         response(c, "404 Not Found", "text/plain", "Not found", 9);
         return;
     }
-    unsigned n = status(a, body, sizeof(body));
+    unsigned n = status(a, body, sizeof(body), c->loopback);
     response(c, "200 OK", "application/json", body, n);
 }
 static void network_tick(struct app *a, u64 now) {
@@ -748,6 +886,8 @@ static void network_tick(struct app *a, u64 now) {
             int one = 1;
             sc5(SYS_setsockopt, fd, 0xffff, 0x800, (long)&one, 4);
             c->fd = fd; c->used = c->sent = c->total = 0; c->input[0] = 0; c->deadline = now + 3000000;
+            c->loopback = (((u8 *)&peer.addr)[0] == 127); /* the console reaches us here */
+            stir_entropy(a, a->clock() ^ ((u64)peer.addr << 16) ^ (u64)fd); /* feed the RNG fallback */
         }
         if (now > c->deadline) { closefd(c->fd); c->fd = -1; continue; }
         if (!c->total) {
@@ -858,11 +998,15 @@ void *bta_worker(void *arg) {
     sc3(SYS_mkdir, (long)"/data/bta_audio", 0777, 0);
     sc3(SYS_chmod, (long)"/data/bta_audio", 0777, 0);
     sc3(SYS_unlink, (long)BTA_STOP, 0, 0);
+    resolve("sceKernelGetRandomNumber", &a.getrandom); /* optional; fill_random falls back */
     load_target(&a);
     load_joint(&a);
     load_volume(&a);
     load_latency(&a);
     a.tv = exists(TV_ON);
+    sc3(SYS_unlink, (long)PAIR_CODE, 0, 0); /* a code never outlives the service session */
+    { char code[BTA_CODE_DIGITS + 1]; /* phone control stays off unless the flag file is present */
+      persist_lan(sync_lan(&a, exists(LAN_ON), code), code); }
     a.hdmi = sc3(SYS_open, (long)"/dev/hdmi", 2, 0);
     message(&a, "Ready. Select your headphones and press Connect.");
     notify("Bluetooth Audio is ready and idle. Open the home-screen app, then press Connect. Web controls: http://127.0.0.1:8097/ (or your PS4 IP on port 8097).");
@@ -890,16 +1034,21 @@ void *bta_worker(void *arg) {
             a.meter_peak = 0;
             a.meter_at = now + 80000;
         }
-        if (beat) { n = status(&a, json, sizeof(json)); a.level = 0; a.heartbeat = now + 1000000; }
+        if (beat) { n = status(&a, json, sizeof(json), 0); a.level = 0; a.heartbeat = now + 1000000; } /* reveal=0: the code never lands in status.json */
         unlock_state(&a);
         if (beat) {
             /* File I/O stays outside the lock: a slow write must never hold up the sender. */
             put("/data/bta_audio/status.json", json, n);
             if (exists(BTA_STOP)) break;
             int tv = exists(TV_ON);
+            int lan = exists(LAN_ON);
+            char lancode[BTA_CODE_DIGITS + 1];
+            int lanact;
             lock_state(&a);
             a.tv = tv;
+            lanact = sync_lan(&a, lan, lancode); /* owner may toggle phone control via the flag file or the app */
             unlock_state(&a);
+            persist_lan(lanact, lancode); /* file write and TV notice stay outside the lock */
             /* Disconnect is detected by the audio send failing (see audio_tick),
              * as the proven bridge did. No per-second driver state poll while streaming. */
         }
@@ -911,7 +1060,7 @@ void *bta_worker(void *arg) {
     a.wanted = 0;
     message(&a, "Bluetooth Audio is offline. TV sound restored.");
     char json[12000];
-    unsigned n = status(&a, json, sizeof(json));
+    unsigned n = status(&a, json, sizeof(json), 0);
     put("/data/bta_audio/status.json", json, n);
     for (int i = 0; i < 4; i++) closefd(a.clients[i].fd);
     closefd(a.listener);

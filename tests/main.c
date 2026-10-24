@@ -10,6 +10,7 @@ struct test_counts g_test = {0, 0};
 
 int main(void) {
     printf("json...\n");   test_json();
+    printf("auth...\n");   test_auth();
     printf("strfmt...\n"); test_strfmt();
     printf("dsp...\n");    test_dsp();
     printf("core...\n");   test_core();
