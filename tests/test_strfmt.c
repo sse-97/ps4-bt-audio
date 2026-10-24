@@ -39,4 +39,14 @@ void test_strfmt(void) {
     CHECK(bta_prefix("hello world", "hello"));
     CHECK(!bta_prefix("hello", "hello world"));
     CHECK(bta_prefix("abc", ""));
+
+    /* ip_text: a network-order IPv4 address (bytes as in a sockaddr) to text. */
+    { static const unsigned char cases[4][4] = {{192, 168, 1, 97}, {10, 0, 0, 5}, {255, 255, 255, 255}, {0, 0, 0, 0}};
+      static const char *want[4] = {"192.168.1.97", "10.0.0.5", "255.255.255.255", "0.0.0.0"};
+      for (int i = 0; i < 4; i++) {
+          u32 v; char ip[16];
+          memcpy(&v, cases[i], 4);
+          ip_text(v, ip);
+          CHECK(!strcmp(ip, want[i]));
+      } }
 }

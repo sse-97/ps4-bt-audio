@@ -18,6 +18,7 @@ int main(void) {
     printf("profiles...\n"); test_profiles();
     printf("timing...\n"); test_timing();
     printf("pacing...\n"); test_pacing();
+    printf("qr...\n");     test_qr();
     printf("\n%d checks, %d failures\n", g_test.checks, g_test.failures);
     return g_test.failures ? 1 : 0;
 }

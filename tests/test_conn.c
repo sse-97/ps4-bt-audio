@@ -50,4 +50,17 @@ void test_conn(void) {
     CHECK_EQ(conn_quiet_for_ms(CONN_STREAMING, 5000000, 1000000), 0);    /* now before ok_at */
     CHECK_EQ(conn_quiet_for_ms(CONN_STREAMING, 1000000, 3000000), 2000); /* (3s-1s)/1000 */
     CHECK_EQ(conn_quiet_for_ms(CONN_STREAMING, 0, 3000000000000ULL), 2000000000); /* clamp */
+
+    /* plan_link: dial when there is no link; reuse only a link this run dialled;
+     * any other live link (an earlier run's, or one still closing) is dropped and
+     * dialled afresh, since it can play nothing while accepting audio. */
+    CHECK_EQ(conn_plan_link(0, 0), CONN_DIAL);
+    CHECK_EQ(conn_plan_link(4, 1), CONN_DIAL);
+    CHECK_EQ(conn_plan_link(7, 1), CONN_DIAL);
+    CHECK_EQ(conn_plan_link(-1, 0), CONN_DIAL);       /* driver error: just dial */
+    CHECK_EQ(conn_plan_link(5, 1), CONN_REUSE);
+    CHECK_EQ(conn_plan_link(6, 1), CONN_REUSE);
+    CHECK_EQ(conn_plan_link(5, 0), CONN_DROP_FIRST);
+    CHECK_EQ(conn_plan_link(6, 0), CONN_DROP_FIRST);
+    CHECK(conn_link_up(5) && conn_link_up(6) && !conn_link_up(4) && !conn_link_up(7));
 }

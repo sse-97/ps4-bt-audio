@@ -37,7 +37,10 @@ int bta_apply_patch(void);
 #define SYS_unlink  10
 #define SYS_chmod   15
 #define SYS_accept  30
+#define SYS_getsockname 32
 #define SYS_ioctl   54
+#define SYS_socket  97
+#define SYS_connect 98
 #define SYS_setsockopt 105
 #define SYS_rename  128
 #define SYS_mkdir   136
@@ -114,6 +117,8 @@ struct app {
     u64 ok_at, meter_at, notify_at[3];
     unsigned meter_peak;
     struct bt_device target;
+    u64 own_link;        /* address of the link this run dialled; 0 once dropped (see conn_plan_link) */
+    u64 redial_at;       /* a stale link was just dropped: dial afresh at this time */
     struct bta_profiles profiles;
     int profile_dirty;   /* profiles changed in memory, persist on the next beat */
     u64 last_tick;       /* worker-loop time, for rest-mode resume detection */
@@ -131,6 +136,15 @@ struct app {
      * sender is never blocked on flash I/O while toggling phone control. */
     int lan_act;
     char lan_code[BTA_CODE_DIGITS + 1];
+    /* The console's LAN address while phone control is on (0 if unknown), shown
+     * with the code so a phone knows where to go. Worker thread only. */
+    u32 ip;
+    u64 ip_at;
+    /* Service log (see log_text): lines wait here under the lock until the
+     * heartbeat appends them to SERVICE_LOG outside it. */
+    char log[1024];
+    u32 log_len;
+    u64 log_t0, log_size;
 };
 
 /* Fold an observation into the entropy pool. Cheap, called on network events so
@@ -168,13 +182,40 @@ static int sync_lan(struct app *a, int on, char code[BTA_CODE_DIGITS + 1]) {
     if (!on && a->auth.enabled) { bta_auth_disable(&a->auth); return -1; }
     return 0;
 }
+/* The console's LAN address: the source address the network stack picks for an
+ * outside destination (a UDP connect sends nothing). 0 without a network, or
+ * when it isn't a private LAN address, the only kind phones are accepted from
+ * (see network_tick). */
+static u32 lan_address(void) {
+    long fd = sc3(SYS_socket, 2, 2, 0); /* AF_INET, SOCK_DGRAM */
+    if (fd < 0) return 0;
+    struct sockaddr4 to = {16, 2, 0x3500, 0x08080808, {0}}; /* 8.8.8.8, port 53 */
+    struct sockaddr4 me;
+    u32 len = sizeof(me), ip = 0;
+    memset(&me, 0, sizeof(me));
+    if (sc3(SYS_connect, fd, (long)&to, sizeof(to)) >= 0 && sc3(SYS_getsockname, fd, (long)&me, (long)&len) >= 0) ip = me.addr;
+    closefd(fd);
+    const u8 *b = (const u8 *)&ip;
+    return local_ip(b) && b[0] != 127 ? ip : 0;
+}
 /* Act on what sync_lan reported, with no lock held: write or remove the code
- * file and announce the code on the TV. */
-static void persist_lan(int act, const char *code) {
+ * file, look up the console's address and announce both on the TV. */
+static void persist_lan(struct app *a, int act, const char *code) {
     if (act == 1) {
         put(PAIR_CODE, code, BTA_CODE_DIGITS);
-        char m[96];
-        compose(m, sizeof(m), "Phone control is on. Pairing code: ", code, ". Enter it in your phone's browser.");
+        a->ip = lan_address();
+        a->ip_at = a->clock() + 30000000;
+        char m[160];
+        if (a->ip) {
+            char ip[16];
+            struct writer w = {m, 0, sizeof(m)};
+            ip_text(a->ip, ip);
+            append(&w, "Phone control is on. On your phone, open http://");
+            append(&w, ip);
+            append(&w, ":8097 and enter code ");
+            append(&w, code);
+            append(&w, ".");
+        } else compose(m, sizeof(m), "Phone control is on. Pairing code: ", code, ". Enter it in your phone's browser.");
         notify(m);
     } else if (act == -1) {
         sc3(SYS_unlink, (long)PAIR_CODE, 0, 0);
@@ -184,7 +225,54 @@ static void persist_lan(int act, const char *code) {
 static void lock_state(struct app *a) { if (a->mlock) a->mlock(&a->mutex); }
 static void unlock_state(struct app *a) { if (a->munlock) a->munlock(&a->mutex); }
 
+/* Service log: every new status message plus a few connection details, stamped
+ * with the seconds since the service started, so what happened on the console
+ * can be read back over FTP. Each start moves the previous run's log aside. */
+#define SERVICE_LOG "/data/bta_audio/service.log"
+#define SERVICE_LOG_OLD "/data/bta_audio/service-previous.log"
+#define SERVICE_LOG_CAP 262144 /* bytes per run, so a flapping link can't fill the disk */
+static void log_put(struct app *a, const char *s) {
+    for (; *s && a->log_len + 2 < sizeof(a->log); s++) a->log[a->log_len++] = *s;
+}
+static void log_text(struct app *a, const char *s) {
+    char t[24];
+    u64 ds = (a->clock() - a->log_t0) / 100000; /* tenths of a second */
+    unsigned i = sizeof(t) - 1;
+    t[i] = 0;
+    t[--i] = ' '; t[--i] = ']'; t[--i] = (char)('0' + ds % 10); t[--i] = '.';
+    ds /= 10;
+    do { t[--i] = (char)('0' + ds % 10); ds /= 10; } while (ds && i > 1);
+    t[--i] = '[';
+    log_put(a, t + i);
+    log_put(a, s);
+    if (a->log_len + 1 < sizeof(a->log)) a->log[a->log_len++] = '\n';
+}
+static void log_num(struct app *a, const char *label, long v) {
+    char b[96];
+    struct writer w = {b, 0, sizeof(b)};
+    append(&w, label);
+    number(&w, v);
+    log_text(a, b);
+}
+/* Under the lock: hand over the pending lines. */
+static u32 take_log(struct app *a, char *out) {
+    u32 n = a->log_len;
+    memcpy(out, a->log, n);
+    a->log_len = 0;
+    return n;
+}
+/* Outside the lock: append them to the file. */
+static void write_log(struct app *a, const char *b, u32 n) {
+    if (!n || a->log_size + n > SERVICE_LOG_CAP) return;
+    long f = sc3(SYS_open, (long)SERVICE_LOG, 0x209, 0644); /* write, create, append */
+    if (f < 0) return;
+    sc3(SYS_write, f, (long)b, n);
+    closefd(f);
+    a->log_size += n;
+}
+
 static void message(struct app *a, const char *s) {
+    if (!equal(a->message, s)) log_text(a, s);
     memset(a->message, 0, sizeof(a->message));
     u64 n = length(s);
     if (n > 127) n = 127;
@@ -268,7 +356,9 @@ static void drop_link(struct app *a) {
     if (a->bt >= 0 && a->target.address) {
         u64 address = a->target.address;
         sc3(SYS_ioctl, a->bt, BT_DROP_LINK, (long)&address);
+        log_text(a, "link: dropped");
     }
+    a->own_link = 0;
 }
 /* Last-resort recovery once the automatic format fallback has not helped: drop
  * the link and reconnect from scratch, restarting the backoff. Any accepted
@@ -284,6 +374,7 @@ static void relink(struct app *a) {
  * controller). stop_audio restores TV sound. */
 static void link_lost(struct app *a) {
     stop_audio(a); a->dropped = 1; a->give_up = 0; a->attempts = 0;
+    a->own_link = 0; /* should the driver still list it, that link is dead: dial afresh */
     a->state = CONN_RECOVERING; a->next_try = a->clock() + 2000000;
     say(a, "", " disconnected. TV sound is back. Reconnecting...");
     if (may_announce(a, 1)) {
@@ -422,6 +513,20 @@ static void load_latency(struct app *a) {
     }
     apply_latency(a, (int)value);
 }
+/* Ask the driver for a new link to the target. */
+static void dial(struct app *a) {
+    u64 address = a->target.address;
+    sc3(SYS_ioctl, a->bt, BT_SCAN_STOP, 0);
+    a->connect_rc = sc3(SYS_ioctl, a->bt, BT_CONNECT, (long)&address);
+    log_num(a, "connect: dial rc ", a->connect_rc);
+    /* An immediate driver error (e.g. 0x802F0204) means this device will not
+     * connect right now; fail fast instead of waiting out the 30 s window. */
+    if (a->connect_rc < 0) {
+        fail_named(a, "Couldn't connect to ", ". Make sure it's on, nearby and not connected to another device.");
+        return;
+    }
+    a->own_link = address;
+}
 static void begin_connect(struct app *a) {
     a->patch_rc = bta_apply_patch();
     if (a->patch_rc) { fail(a, "Bluetooth setup failed. Check the diagnostic status."); return; }
@@ -449,18 +554,17 @@ static void begin_connect(struct app *a) {
     a->mode = bta_profile_mode(&a->profiles, a->target.address);
     u64 address = a->target.address;
     a->btstate = sc3(SYS_ioctl, a->bt, BT_LINK_STATE, (long)&address);
-    a->state = CONN_CONNECTING; a->deadline = a->clock() + 30000000;
+    a->state = CONN_CONNECTING; a->deadline = a->clock() + 30000000; a->redial_at = 0;
     say(a, "Connecting to ", "...");
-    if (a->btstate < 5 || a->btstate > 6) {
-        sc3(SYS_ioctl, a->bt, BT_SCAN_STOP, 0);
-        a->connect_rc = sc3(SYS_ioctl, a->bt, BT_CONNECT, (long)&address);
-        /* An immediate driver error (e.g. 0x802F0204) means this device will not
-         * connect right now; fail fast instead of waiting out the 30 s window. */
-        if (a->connect_rc < 0) {
-            fail_named(a, "Couldn't connect to ", ". Make sure it's on, nearby and not connected to another device.");
-            return;
-        }
-    } else a->connect_rc = 0;
+    log_num(a, "connect: link state ", a->btstate);
+    switch (conn_plan_link(a->btstate, a->own_link == address)) {
+    case CONN_DIAL: dial(a); break;
+    case CONN_REUSE: a->connect_rc = 0; break;
+    case CONN_DROP_FIRST: /* bluetooth_tick dials once it has closed */
+        drop_link(a);
+        a->redial_at = a->clock() + 2000000;
+        break;
+    }
 }
 static void start_audio(struct app *a) {
     a->shmfd = a->shm("/shm_acap.full", 0, 0);
@@ -482,7 +586,7 @@ static void start_audio(struct app *a) {
      * accepted, in audio_tick) so the give-up cap can trigger. */
     a->confirmed = 0; a->modes_tried = (u8)(1 << a->mode);
     a->ok_at = a->stream_at; a->meter = 0; a->meter_peak = 0;
-    say(a, "Connected to ", a->tv ? ". TV sound is on." : ". TV sound is muted.");
+    say(a, "Connected to ", ".");
     if (was_dropped) {
         if (told && may_announce(a, 2)) {
             char m[96];
@@ -491,8 +595,7 @@ static void start_audio(struct app *a) {
         }
     } else if (fresh && may_announce(a, 0)) {
         char m[128];
-        compose(m, sizeof(m), "Connected to ", target_name(a),
-                a->tv ? ". TV sound stays on." : ". TV sound is muted.");
+        compose(m, sizeof(m), "Connected to ", target_name(a), ".");
         notify(m);
     }
 }
@@ -534,8 +637,19 @@ static void bluetooth_tick(struct app *a, u64 now) {
     }
     if (a->state == CONN_CONNECTING || a->state == CONN_PAIRING) {
         u64 address = a->target.address;
+        if (a->redial_at) {
+            /* begin_connect dropped a stale link: give it time to close, then dial. */
+            if (now < a->redial_at) return;
+            a->redial_at = 0;
+            a->btstate = sc3(SYS_ioctl, a->bt, BT_LINK_STATE, (long)&address);
+            if (!conn_link_up(a->btstate)) { dial(a); return; }
+            /* Up again already: the device linked back by itself, on a new link. */
+            log_text(a, "connect: the device linked back by itself");
+            a->own_link = address;
+        }
         a->btstate = sc3(SYS_ioctl, a->bt, BT_LINK_STATE, (long)&address);
-        if (a->btstate >= 5 && a->btstate <= 6) {
+        if (conn_link_up(a->btstate)) {
+            log_text(a, "connect: link up");
             a->pin_pending = 0;
             if (exists(NO_WIDEN)) {
                 a->packet_rc = 0; /* diagnostic: leave controller link params untouched */
@@ -713,6 +827,12 @@ static unsigned status(struct app *a, char *out, unsigned cap, int reveal) {
     field(&w, "no_widen", exists(NO_WIDEN));
     field(&w, "uptime_us", a->clock());
     field(&w, "lan", a->auth.enabled);
+    if (a->auth.enabled && a->ip) {
+        char ip[16];
+        ip_text(a->ip, ip);
+        append(&w, ",\"ip\":");
+        quoted(&w, ip);
+    }
     if (reveal && a->auth.enabled) {
         append(&w, ",\"pair_code\":");
         quoted(&w, a->auth.code);
@@ -885,7 +1005,10 @@ static void dispatch(struct app *a, struct client *c) {
         u64 old = a->target.address;
         end_scan(a); stop_audio(a);
         if (select_device(a, &chosen)) { response(c, "500 Internal Server Error", "text/plain", "Cannot save selection.", 22); return; }
-        if (old != mac && a->bt >= 0) sc3(SYS_ioctl, a->bt, BT_DROP_LINK, (long)&old);
+        if (old != mac) {
+            if (a->bt >= 0) sc3(SYS_ioctl, a->bt, BT_DROP_LINK, (long)&old);
+            a->own_link = 0; /* that was the old device's link */
+        }
         a->wanted = 1; a->state = CONN_RECOVERING; a->next_try = 0;
         a->dropped = a->give_up = a->announced = a->session = 0;
         a->attempts = 0; a->relinks = 0; a->refused_since = 0;
@@ -994,7 +1117,7 @@ static void network_tick(struct app *a, u64 now) {
                     lock_state(a); dispatch(a, c); unlock_state(a);
                     /* A phone-control toggle leaves its file write and TV notice
                      * here, outside the lock, so flash I/O can't stall the sender. */
-                    if (a->lan_act) { persist_lan(a->lan_act, a->lan_code); a->lan_act = 0; }
+                    if (a->lan_act) { persist_lan(a, a->lan_act, a->lan_code); a->lan_act = 0; }
                 }
                 else if (c->used == sizeof(c->input) - 1) response(c, "431 Request Header Fields Too Large", "text/plain", "Request too large", 17);
             }
@@ -1096,6 +1219,9 @@ void *bta_worker(void *arg) {
     }
     sc3(SYS_mkdir, (long)"/data/bta_audio", 0777, 0);
     sc3(SYS_chmod, (long)"/data/bta_audio", 0777, 0);
+    sc3(SYS_rename, (long)SERVICE_LOG, (long)SERVICE_LOG_OLD, 0);
+    a.log_t0 = a.clock();
+    log_text(&a, "Bluetooth Audio service 2.8.0 started");
     sc3(SYS_unlink, (long)BTA_STOP, 0, 0);
     resolve("sceKernelGetRandomNumber", &a.getrandom); /* optional; fill_random falls back */
     load_profiles(&a);
@@ -1105,7 +1231,7 @@ void *bta_worker(void *arg) {
     a.tv = exists(TV_ON);
     sc3(SYS_unlink, (long)PAIR_CODE, 0, 0); /* a code never outlives the service session */
     { char code[BTA_CODE_DIGITS + 1]; /* phone control stays off unless the flag file is present */
-      persist_lan(sync_lan(&a, exists(LAN_ON), code), code); }
+      persist_lan(&a, sync_lan(&a, exists(LAN_ON), code), code); }
     a.hdmi = sc3(SYS_open, (long)"/dev/hdmi", 2, 0);
     if (a.wanted) {
         /* A remembered device exists: reconnect to whichever one is turned on. */
@@ -1132,6 +1258,7 @@ void *bta_worker(void *arg) {
             lock_state(&a);
             stop_audio(&a);
             closefd(a.bt); a.bt = -1;
+            a.own_link = 0; /* a link that outlived the sleep is not trusted: dial afresh */
             if (a.wanted) {
                 a.state = CONN_RECOVERING; a.dropped = a.give_up = 0; a.attempts = 0; a.next_try = now;
                 message(&a, "Woke from rest mode. Reconnecting...");
@@ -1141,8 +1268,9 @@ void *bta_worker(void *arg) {
         a.last_tick = now;
         if (now >= a.net_at) { network_tick(&a, now); a.net_at = now + 4000; } /* locks around each request */
         if (a.quit) break;
-        char json[12000];
+        char json[12000], logbuf[sizeof(a.log)];
         unsigned n = 0;
+        u32 logn = 0;
         int beat = now >= a.heartbeat;
         /* Take the lock only when there is shared-state work (~35 times a second). */
         if (now < a.poll_at && a.sender_alive && now < a.meter_at && !beat) { a.sleep(500); continue; }
@@ -1159,11 +1287,12 @@ void *bta_worker(void *arg) {
             a.meter_peak = 0;
             a.meter_at = now + 80000;
         }
-        if (beat) { n = status(&a, json, sizeof(json), 0); a.level = 0; a.heartbeat = now + 1000000; } /* reveal=0: the code never lands in status.json */
+        if (beat) { n = status(&a, json, sizeof(json), 0); a.level = 0; a.heartbeat = now + 1000000; logn = take_log(&a, logbuf); } /* reveal=0: the code never lands in status.json */
         unlock_state(&a);
         if (beat) {
             /* File I/O stays outside the lock: a slow write must never hold up the sender. */
             put("/data/bta_audio/status.json", json, n);
+            write_log(&a, logbuf, logn);
             if (a.profile_dirty) {
                 lock_state(&a);
                 struct bta_profiles snap = a.profiles; a.profile_dirty = 0;
@@ -1179,7 +1308,9 @@ void *bta_worker(void *arg) {
             a.tv = tv;
             lanact = sync_lan(&a, lan, lancode); /* owner may toggle phone control via the flag file or the app */
             unlock_state(&a);
-            persist_lan(lanact, lancode); /* file write and TV notice stay outside the lock */
+            persist_lan(&a, lanact, lancode); /* file write and TV notice stay outside the lock */
+            /* The address can arrive late (network still coming up) or change (DHCP). */
+            if (a.auth.enabled && now >= a.ip_at) { a.ip = lan_address(); a.ip_at = now + (a.ip ? 30000000 : 5000000); }
             /* Disconnect is detected by the audio send failing (see audio_tick),
              * as the proven bridge did. No per-second driver state poll while streaming. */
         }
@@ -1188,11 +1319,13 @@ void *bta_worker(void *arg) {
     stop_sender(&a);
     end_scan(&a);
     stop_audio(&a);
+    drop_link(&a); /* leave no idle link behind: the next run would find it stale (see conn_plan_link) */
     a.wanted = 0;
     message(&a, "Bluetooth Audio is offline. TV sound restored.");
     char json[12000];
     unsigned n = status(&a, json, sizeof(json), 0);
     put("/data/bta_audio/status.json", json, n);
+    write_log(&a, a.log, a.log_len); /* the sender has stopped: no lock, no copy */
     for (int i = 0; i < 4; i++) closefd(a.clients[i].fd);
     closefd(a.listener);
     closefd(a.bt);

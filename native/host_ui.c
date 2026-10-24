@@ -15,6 +15,7 @@ static void apply(const char *k, const char *v) {
     else if (!strcmp(k, "focus")) ctx.focus = atoi(v);
     else if (!strcmp(k, "top")) ctx.top = atoi(v);
     else if (!strcmp(k, "online")) ctx.online = atoi(v);
+    else if (!strcmp(k, "busy")) ctx.busy = atoi(v);
     else if (!strcmp(k, "confirm_circle")) ctx.confirm_circle = atoi(v);
     else if (!strcmp(k, "menu")) ctx.menu = atoi(v);
     else if (!strcmp(k, "menu_focus")) ctx.menu_focus = atoi(v);
@@ -33,6 +34,7 @@ static void apply(const char *k, const char *v) {
     else if (!strcmp(k, "test")) state.test = atoi(v);
     else if (!strcmp(k, "lan")) state.lan = atoi(v);
     else if (!strcmp(k, "pair_code")) snprintf(state.pair_code, sizeof(state.pair_code), "%s", v);
+    else if (!strcmp(k, "ip")) snprintf(state.ip, sizeof(state.ip), "%s", v);
     else if (!strcmp(k, "attempts")) state.attempts = atoi(v);
     else if (!strcmp(k, "retry_ms")) state.retry_ms = atoi(v);
     else if (!strcmp(k, "meter")) state.meter = atoi(v);

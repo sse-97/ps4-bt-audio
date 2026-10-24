@@ -12,7 +12,7 @@ Font note: glyph bitmaps are baked from DejaVu Sans (free license, see
 LICENSE_DEJAVU.txt), taken from the copy bundled with matplotlib.
 """
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from PIL import Image, ImageDraw, ImageFont
 
 root = Path(__file__).resolve().parent
 out = root.parent / 'build/native'
@@ -34,10 +34,11 @@ FACES = [
 ]
 GAMMA = 0.85  # <1 thickens light-on-dark text slightly so it stays crisp on TVs
 
-# PlayStation Blue (#0070cc), brightened a touch so the app icon's glow reads on
-# the near-black tile; white for the headphones motif.
-PSBLUE = (46, 140, 224, 255)
-WHITE = (240, 246, 252, 255)
+# The app icon follows the PS4's own app tiles (Internet Browser, TV & Video): a
+# white line-art symbol on a deep blue, a little lighter at the top.
+TILE_TOP = (8, 30, 156)
+TILE_BOTTOM = (2, 18, 128)
+WHITE = (255, 255, 255, 255)
 SS = 8  # supersampling for icon masks
 
 
@@ -81,17 +82,6 @@ def mask_canvas(w, h):
 
 def finish(im, w, h):
     return im.resize((w, h), Image.LANCZOS)
-
-
-def draw_headphones(d, cx, cy, s, fill=255):
-    """Band + two earcups; the app icon's motif."""
-    band_w = max(2, int(0.17 * s))
-    d.arc((cx - 0.74 * s, cy - 0.72 * s, cx + 0.74 * s, cy + 0.40 * s), 180, 360, fill=fill, width=band_w)
-    cup_w, cup_h = 0.27 * s, 0.46 * s
-    top = cy - 0.18 * s
-    rad = int(cup_w * 0.45)
-    d.rounded_rectangle((cx - 0.74 * s, top, cx - 0.74 * s + cup_w, top + cup_h), radius=rad, fill=fill)
-    d.rounded_rectangle((cx + 0.74 * s - cup_w, top, cx + 0.74 * s, top + cup_h), radius=rad, fill=fill)
 
 
 def draw_bt(d, cx, cy, hw, hh, color, width):
@@ -209,29 +199,18 @@ ICON_SPECS = [
 
 
 # --- App icon -------------------------------------------------------------------
-def draw_motif(img, cx, cy, scale, head_color, bt_color):
-    d = ImageDraw.Draw(img)
-    draw_headphones(d, cx, cy, scale, fill=head_color)
-    draw_bt(d, cx, cy + 0.10 * scale, 0.17 * scale, 0.32 * scale, bt_color, max(2, int(0.075 * scale)))
-
-
 def build_icon512():
-    """App tile: a white headphones-and-Bluetooth motif lit by a PlayStation-blue
-    glow on a near-black console tile, framed by a thin blue edge."""
+    """App tile in the style of the PS4's own apps: the Bluetooth symbol from the
+    app's device rows, white and in the same proportions (its stroke about a
+    tenth of its height), centred on the deep app-tile blue. No frame or glow:
+    the system draws the tile's focus."""
     S = 512 * 3
-    top_c, bot_c = (0x0a, 0x12, 0x20), (0x02, 0x06, 0x0e)
-    grad = Image.new('RGB', (S, S))
-    gd = ImageDraw.Draw(grad)
+    icon = Image.new('RGBA', (S, S))
+    d = ImageDraw.Draw(icon)
     for y in range(S):
         t = y / (S - 1)
-        gd.line([(0, y), (S, y)], fill=tuple(int(top_c[i] * (1 - t) + bot_c[i] * t) for i in range(3)))
-    icon = grad.convert('RGBA')
-    glow = Image.new('RGBA', (S, S), (0, 0, 0, 0))
-    ImageDraw.Draw(glow).ellipse((S * 0.26, S * 0.20, S * 0.74, S * 0.66), fill=(0, 112, 204, 95))
-    icon = Image.alpha_composite(icon, glow.filter(ImageFilter.GaussianBlur(S * 0.035)))
-    draw_motif(icon, S * 0.5, S * 0.46, S * 0.33, WHITE, PSBLUE)
-    ImageDraw.Draw(icon).rounded_rectangle((int(S * 0.045), int(S * 0.045), int(S * 0.955), int(S * 0.955)),
-                                           radius=int(S * 0.11), outline=(0, 112, 204, 90), width=max(1, int(S * 0.006)))
+        d.line([(0, y), (S, y)], fill=tuple(round(TILE_TOP[i] * (1 - t) + TILE_BOTTOM[i] * t) for i in range(3)) + (255,))
+    draw_bt(d, S * 0.5, S * 0.5, 0.125 * S, 0.25 * S, WHITE, int(0.045 * S))
     return icon.resize((512, 512), Image.LANCZOS).convert('RGB')
 
 

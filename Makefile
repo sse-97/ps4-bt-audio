@@ -78,7 +78,7 @@ endef
 $(NATIVE)/ui_font.h $(NATIVE)/ui_icons.h $(NATIVE)/icon0.png &: native/make_assets.py | $(NATIVE)
 	$(PYTHON) native/make_assets.py
 
-$(NATIVE)/main.o: native/main.c native/ui.h $(NATIVE)/ui_font.h $(NATIVE)/ui_icons.h
+$(NATIVE)/main.o: native/main.c native/ui.h native/qr.h $(NATIVE)/ui_font.h $(NATIVE)/ui_icons.h
 	$(need_toolchain)
 	$(CLANG) --target=x86_64-pc-freebsd12-elf -O2 -fPIC -funwind-tables \
 		-isysroot $(OO_PS4_TOOLCHAIN) -isystem $(OO_PS4_TOOLCHAIN)/include -I $(NATIVE) \
@@ -130,7 +130,7 @@ clean:
 
 HOST_CC ?= $(CLANG)
 host-ui: $(BUILD)/host_ui
-$(BUILD)/host_ui: native/host_ui.c native/ui.h $(NATIVE)/ui_font.h $(NATIVE)/ui_icons.h
+$(BUILD)/host_ui: native/host_ui.c native/ui.h native/qr.h $(NATIVE)/ui_font.h $(NATIVE)/ui_icons.h
 	$(HOST_CC) -O2 -Wall -Wno-format-truncation -I $(NATIVE) $< -o $@
 
 # --- Host unit tests ------------------------------------------------------------

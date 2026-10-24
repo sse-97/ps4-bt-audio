@@ -6,6 +6,8 @@
  * over a full-width rule, one centred list whose focused row gets the white focus
  * frame, and the button legend under a second rule at the bottom. Actions for the
  * connected device live in the Options side menu; questions open centred dialogs.
+ * While phone control is on, a panel on the left holds the QR code, address and
+ * pairing code, and the list moves right to make room.
  * The app is a client of the control API (docs/API.md): all state comes from
  * GET /api/status via model.h, never from a private binary layout.
  */
@@ -17,6 +19,7 @@
 #include "model.h"
 #include "ui_font.h"
 #include "ui_icons.h"
+#include "qr.h"
 
 #define WIDTH 1920
 #define HEIGHT 1080
@@ -39,6 +42,7 @@ struct ui_ctx {
     int top;            /* first visible row of a scrolling list */
     int confirm_circle; /* region: 1 => the Circle button confirms, Cross cancels */
     int online;         /* service is answering; when not, the Start dialog shows */
+    int busy;           /* the Start dialog is starting the service (spinner) */
     int menu;           /* Options side menu open (Home, on the connected device) */
     int menu_focus;     /* MENU_* */
     int dialog;         /* DLG_* over Home */
@@ -314,7 +318,12 @@ static int focus_is_active(const struct ui_ctx*c){
 }
 
 /* ---- list rows ---- */
-#define LIST_X 288
+/* The list is centred, and moves right to make room for the phone-control panel
+ * on the left while that is shown (draw() sets list_x each frame). */
+#define LIST_X_CENTRED 288
+#define LIST_X_PANEL 480
+static int list_x = LIST_X_CENTRED;
+#define LIST_X list_x
 #define LIST_W 1344
 #define LIST_Y 172
 #define ROW_H 84
@@ -360,8 +369,9 @@ static void home_row(const struct ui_ctx*c,int i,int y,int sel){
  else if(k==ROW_LATENCY){row_label(y,"Audio Latency",900);row_value(y,LAT_NAMES[lat_mode()]);}
  else if(k==ROW_PHONE){
   row_label(y,"Allow Phone Control",900);checkbox(y,state.lan);
-  /* The service reveals the pairing code only to the console (loopback). */
-  if(state.lan&&state.pair_code[0]){snprintf(buf,sizeof(buf),"Code %s",state.pair_code);text_r(F_SMALL,BOX_X-28,y+51,buf,WHITE);}
+  /* The service reveals the pairing code only to the console (loopback). Without
+   * an address there is no phone panel, so the code shows here instead. */
+  if(state.lan&&state.pair_code[0]&&!state.ip[0]){snprintf(buf,sizeof(buf),"Code %s",state.pair_code);text_r(F_SMALL,BOX_X-28,y+51,buf,WHITE);}
  }else row_label(y,"Stop Audio Service",900);
 }
 /* The thin native scrollbar to the right of a list that doesn't fit. */
@@ -386,7 +396,7 @@ static void draw_scan(const struct ui_ctx*c){
 }
 static const char*TEST_ITEMS[TEST_COUNT]={"Yes","No, Play Again","Disconnect"};
 static void draw_test(const struct ui_ctx*c){
- text_c(F_ROW,960,218,"Can you hear the test tone?",WHITE,1600);
+ text_c(F_ROW,LIST_X+LIST_W/2,218,"Can you hear the test tone?",WHITE,1600);
  for(int i=0;i<TEST_COUNT;i++){
   int y=268+i*90;
   if(c->focus==i)focus_frame(LIST_X,y,LIST_W,ROW_H);
@@ -395,11 +405,13 @@ static void draw_test(const struct ui_ctx*c){
 }
 /* Like the system's choice lists: a check marks the current mode, the frame the focus. */
 static void draw_latency(const struct ui_ctx*c){
+ /* Full width, or the list's width beside the phone panel. */
+ int x=LIST_X==LIST_X_CENTRED?137:LIST_X,w=LIST_X==LIST_X_CENTRED?1651:LIST_W;
  for(int i=0;i<3;i++){
   int y=178+i*96;
-  if(c->focus==i)focus_frame(137,y,1651,ROW_H);
-  if(i==lat_mode())icon_c(I_CHECK,183,y+42,WHITE,255);
-  text(F_ROW,226,y+52,LAT_NAMES[i],WHITE);text(F_ROW,797,y+52,LAT_NOTES[i],WHITE);
+  if(c->focus==i)focus_frame(x,y,w,ROW_H);
+  if(i==lat_mode())icon_c(I_CHECK,x+46,y+42,WHITE,255);
+  text(F_ROW,x+89,y+52,LAT_NAMES[i],WHITE);text(F_ROW,x+660,y+52,LAT_NOTES[i],WHITE);
  }
 }
 /* The Options side menu: black panel on the right, the list behind it faded. */
@@ -449,6 +461,25 @@ static void draw_pin(const struct ui_ctx*c){
  }
 }
 
+/* ---- phone control: QR code, address and code on the left while it is on ---- */
+static int phone_panel(const struct ui_ctx*c){return c->online&&state.lan&&state.ip[0]&&state.pair_code[0];}
+static struct qr phone_qr;
+static char phone_url[32];
+static void draw_phone(void){
+ char url[32],buf[32];
+ snprintf(url,sizeof(url),"http://%s:8097",state.ip);
+ if(strcmp(url,phone_url)){snprintf(phone_url,sizeof(phone_url),"%s",url);qr_encode(&phone_qr,url);}
+ int box=296,x=106,y=LIST_Y+4,cx=x+box/2;
+ rrect(x,y,box,box,10,WHITE);
+ if(phone_qr.size){ /* dark modules on the white tile, which leaves at least the 4-module quiet zone */
+  int n=phone_qr.size,m=box/(n+8),o=(box-m*n)/2;
+  for(int r=0;r<n;r++)for(int k=0;k<n;k++)if(phone_qr.m[r][k])fill(x+o+k*m,y+o+r*m,m,m,0x000000);
+ }
+ text_c(F_SMALL,cx,y+box+46,"Scan, or go to",WHITE,box);
+ snprintf(buf,sizeof(buf),"%s:8097",state.ip);text_c(F_SMALL,cx,y+box+82,buf,WHITE,box);
+ snprintf(buf,sizeof(buf),"Code %s",state.pair_code);text_c(F_ROW,cx,y+box+138,buf,WHITE,box);
+}
+
 /* ---- button legend along the bottom rule ---- */
 enum { HINT_ENTER, HINT_BACK, HINT_TRIANGLE, HINT_OPTIONS };
 /* The confirm symbol follows the console's enter-button setting (Cross in most
@@ -481,6 +512,10 @@ static void draw(const struct ui_ctx*c){
  int sc=c->screen;if(sc<SCREEN_HOME||sc>SCREEN_LATENCY)sc=SCREEN_HOME;
  text(F_TITLE,106,112,sc==SCREEN_HOME?"Bluetooth Audio":sc==SCREEN_LATENCY?"Audio Latency":"Add Device",WHITE);
  fill_a(0,137,WIDTH,2,WHITE,128);
+ /* While phone control is on, every screen keeps the way in on the left. */
+ int panel=phone_panel(c);
+ list_x=panel?LIST_X_PANEL:LIST_X_CENTRED;
+ if(panel)draw_phone();
  /* Offline, the Start dialog stands alone: a list behind it would show values the
   * service never reported. */
  if(!c->online){}
@@ -493,8 +528,12 @@ static void draw(const struct ui_ctx*c){
  /* One line of feedback above the legend, like the system's info text: the
   * app's own notice, else why the link failed. */
  int noticing=notice[0]&&g_now<notice_until;
- if(!c->online)dialog2("The audio service isn't running.",noticing?notice:"","Start","Close",c->dialog_focus);
- else if(c->dialog==DLG_STOP)dialog2("Stop the audio service?","Starting it again may need a new jailbreak.","Stop","Cancel",c->dialog_focus);
+ if(!c->online){
+  dialog2("The audio service isn't running.",noticing?notice:"","Start","Close",c->dialog_focus);
+  /* Starting: the busy indicator in front of the message, as on a busy row. */
+  if(c->busy&&noticing)spinner(960-text_w(F_SMALL,notice)/2-30,471,11,WHITE,g_now/1000,3);
+ }
+ else if(c->dialog==DLG_STOP)dialog2("Stop the audio service?","","Stop","Cancel",c->dialog_focus);
  else if(noticing)text_c(F_SMALL,960,905,notice,WHITE,1600);
  else if(sc==SCREEN_HOME&&ui_link(c)==LINK_FAILED&&state.message[0])text_c(F_SMALL,960,905,state.message,WHITE,1600);
  if(c->pinmode)draw_pin(c);

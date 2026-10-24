@@ -33,6 +33,7 @@ struct ui_state {
     char conn_state[16];    /* granular link phase: idle/connecting/pairing/configuring/... */
     char message[128];      /* human-readable status line */
     char pair_code[8];      /* six digits, present only when lan is on (loopback) */
+    char ip[16];            /* the console's LAN address while lan is on, if known */
     int count;
     struct ui_device devices[UI_DEVICE_LIMIT];
 };
@@ -150,6 +151,7 @@ static int model_parse(const char *body, struct ui_state *s) {
     j_str(body, "state", s->conn_state, sizeof(s->conn_state));
     j_str(body, "message", s->message, sizeof(s->message));
     j_str(body, "pair_code", s->pair_code, sizeof(s->pair_code));
+    j_str(body, "ip", s->ip, sizeof(s->ip));
     const char *arr = j_member(body, "devices");
     if (arr && *(arr = j_ws(arr)) == '[') {
         p = j_ws(arr + 1);
