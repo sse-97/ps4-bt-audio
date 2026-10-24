@@ -33,10 +33,23 @@ static int online;
 
 /* All file I/O uses sceKernel* (never stdio): the app runs in a restricted
  * sandbox where a blocked libc syscall raises SIGSYS. app.log confirms these
- * kernel calls succeed. */
+ * kernel calls succeed. Each line carries the UTC time of day, like service.log,
+ * so the two line up. */
+#define APP_LOG "/data/bta_audio/app.log"
 static void logline(const char*s){
- int fd=sceKernelOpen("/data/bta_audio/app.log",0x209,0644);
- if(fd>=0){sceKernelWrite(fd,s,strlen(s));sceKernelWrite(fd,"\n",1);sceKernelClose(fd);}
+ OrbisKernelTimeval tv;unsigned t=0;
+ if(!sceKernelGettimeofday(&tv)&&tv.tv_sec>0)t=(unsigned)(tv.tv_sec%86400);
+ char line[256];int n=snprintf(line,sizeof(line),"[%02u:%02u:%02u] %s\n",t/3600,t/60%60,t%60,s);
+ if(n<0)return;if(n>=(int)sizeof(line)){n=sizeof(line)-1;line[n-1]='\n';}
+ int fd=sceKernelOpen(APP_LOG,0x209,0644);
+ if(fd>=0){sceKernelWrite(fd,line,(size_t)n);sceKernelClose(fd);}
+}
+/* A few lines per launch: past 64 KB the log becomes app-previous.log, so the two
+ * files never hold more than about 128 KB. */
+static void rotate_log(void){
+ int fd=sceKernelOpen(APP_LOG,0,0);if(fd<0)return;
+ off_t size=sceKernelLseek(fd,0,2);sceKernelClose(fd);
+ if(size>65536)sceKernelRename(APP_LOG,"/data/bta_audio/app-previous.log");
 }
 static unsigned controller(uint64_t now){
  OrbisPadData data;memset(&data,0,sizeof(data));
@@ -130,6 +143,9 @@ static void action(const char*path){
  if(code==200)notice[0]=0;
  else if(code<0)set_notice("No response from the audio service.");
  else{for(int i=0;body[i];i++)if(body[i]=='\n'||body[i]=='\r')body[i]=0;set_notice(body[0]?body:"That didn't work.");}
+ if(code!=200){ /* the PIN is cut from its path */
+  char m[224];snprintf(m,sizeof(m),"action failed: %s -> %d %s",strncmp(path,"/api/pin/",9)?path:"/api/pin",code,code<0?"":body);logline(m);
+ }
  refresh();
 }
 /* Connect to state.devices[i]. */
@@ -180,18 +196,39 @@ static void snapshot(void){
  sceKernelClose(fd);logline("snapshot: written");
 }
 
+/* Returning from main ends in a raw exit system call, which the app sandbox
+ * refuses with SIGSYS: the system then reports a crash (CE-34878-0). Ask the
+ * system to close the app instead, as other homebrew apps (game or mini app) do,
+ * and wait for it. Should that call fail, keep waiting rather than return: the
+ * app can still be closed from the PS button's Quick Menu. */
+static int close_app(void){
+ int rc=sceSystemServiceLoadExec("exit",NULL);
+ char m[48];snprintf(m,sizeof(m),"exit: system close rc=0x%x",rc);logline(m);
+ for(;;)sceKernelUsleep(100000);
+ return 0;
+}
+
 int main(void){
- sceKernelMkdir("/data/bta_audio",0777);sceKernelChmod("/data/bta_audio",0777);logline("Bluetooth Audio 2.8.0 native app starting");
- int video=sceVideoOutOpen(0xff,0,0,0);if(video<0){logline("VideoOutOpen failed");return 1;}
+ sceKernelMkdir("/data/bta_audio",0777);sceKernelChmod("/data/bta_audio",0777);
+ rotate_log();logline("Bluetooth Audio 2.8.0 native app starting (times UTC)");
+ /* Return codes go to app.log: a mini app (CATEGORY gde) shares the console with a
+  * running game, and these are the calls that would show it. */
+ char diag[128];
+ int video=sceVideoOutOpen(0xff,0,0,0);
+ if(video<0){snprintf(diag,sizeof(diag),"VideoOutOpen failed rc=0x%x",video);logline(diag);return close_app();}
  off_t memory;size_t fbbytes=(size_t)WIDTH*HEIGHT*4;size_t size=(2*fbbytes+0x1FFFFF)&~(size_t)0x1FFFFF;void*base=0;
- if(sceKernelAllocateDirectMemory(0,sceKernelGetDirectMemorySize(),size,0x200000,3,&memory)<0||sceKernelMapDirectMemory(&base,size,0x33,0,memory,0x200000)<0){logline("Video memory failed");return 2;}
+ size_t dmem=sceKernelGetDirectMemorySize();
+ int arc=sceKernelAllocateDirectMemory(0,dmem,size,0x200000,3,&memory),mrc=arc<0?0:sceKernelMapDirectMemory(&base,size,0x33,0,memory,0x200000);
+ snprintf(diag,sizeof(diag),"Video memory: %lu MB direct, alloc=0x%x map=0x%x",(unsigned long)(dmem>>20),arc,mrc);logline(diag);
+ if(arc<0||mrc<0)return close_app();
  void*buffers[2]={base,(char*)base+fbbytes};OrbisVideoOutBufferAttribute attr;
  sceVideoOutSetBufferAttribute(&attr,0x80000000,1,0,WIDTH,HEIGHT,WIDTH);
- if(sceVideoOutRegisterBuffers(video,0,buffers,2,&attr)<0){logline("Register buffers failed");return 3;}
+ int brc=sceVideoOutRegisterBuffers(video,0,buffers,2,&attr);
+ if(brc<0){snprintf(diag,sizeof(diag),"Register buffers failed rc=0x%x",brc);logline(diag);return close_app();}
  sceVideoOutSetFlipRate(video,1);
  OrbisUserServiceInitializeParams userparams={ORBIS_KERNEL_PRIO_FIFO_LOWEST};
  int user_rc=sceUserServiceInitialize(&userparams);int pad_rc=scePadInit();
- char diag[128];snprintf(diag,sizeof(diag),"User init=0x%x Pad init=0x%x",user_rc,pad_rc);logline(diag);
+ snprintf(diag,sizeof(diag),"User init=0x%x Pad init=0x%x",user_rc,pad_rc);logline(diag);
  /* Region enter-button setting: confirm with Circle where the console does. */
  int enter=1;if(sceSystemServiceParamGetInt(ENTER_BUTTON_PARAM,&enter)<0)enter=1;ctx.confirm_circle=(enter==0);
  ctx.pin=pin_buf;
@@ -199,8 +236,8 @@ int main(void){
  g_now=sceKernelGetProcessTime();
  logline("Checking audio service");refresh();start_service();
  logline("Starting display loop");
- unsigned previous=0;int buffer=0,armed=0;long flip=0;uint64_t poll=0,repeat=0,first_draw=0,snap_cd=0,start_at=0;
- int pinignore=0,auto_snapped=0,scan_connecting=0;unsigned long scan_addr=0;
+ unsigned previous=0;int buffer=0,armed=0;long flip=0;uint64_t poll=0,repeat=0,snap_cd=0,start_at=0;
+ int pinignore=0,scan_connecting=0;unsigned long scan_addr=0;
  for(;;){
   uint64_t now=sceKernelGetProcessTime();g_now=now;
   int l=online?(state.link>=LINK_IDLE&&state.link<=LINK_SEARCHING?state.link:LINK_IDLE):LINK_OFFLINE;
@@ -312,11 +349,13 @@ int main(void){
    if(pressed&CANCEL)break;
   }
 
+  /* Sent, but no service ever answered (e.g. one still running holds the port
+   * yet can't be reached): say so rather than leave the dialog empty. */
+  if(starting&&!online&&notice[0]&&g_now>=notice_until)start_notice("The audio service didn't answer. Restart the PS4, then press Start.");
   if(notice[0]&&g_now>=notice_until)notice[0]=0;
   draw(&ctx);
   memcpy(buffers[buffer],back,sizeof(back));
-  if(!first_draw)first_draw=now;
-  if(!auto_snapped&&now-first_draw>2000000){snapshot();auto_snapped=1;}
+  /* L3+R3 saves the screen to app-frame.ppm (6 MB), only when asked for. */
   if((buttons&(ORBIS_PAD_BUTTON_L3|ORBIS_PAD_BUTTON_R3))==(ORBIS_PAD_BUTTON_L3|ORBIS_PAD_BUTTON_R3)&&now>=snap_cd){snapshot();snap_cd=now+2000000;}
   if(sceVideoOutSubmitFlip(video,buffer,1,flip)<0){sceKernelUsleep(33000);continue;}
   for(int tries=0;tries<1000;tries++){OrbisVideoOutFlipStatus status;if(!sceVideoOutGetFlipStatus(video,&status)&&status.flipArg==flip)break;sceKernelUsleep(1000);}
@@ -324,12 +363,5 @@ int main(void){
  }
  logline(online?"Native app closed; audio service remains running":"Native app closed");
  if(pad>=0)scePadClose(pad);sceVideoOutClose(video);
- /* Returning from main ends in a raw exit system call, which the app sandbox
-  * refuses with SIGSYS: the system then reports a crash (CE-34878-0). Ask the
-  * system to close the app instead, and give it time to do so. Should that call
-  * fail, fall back to returning, which still closes the app. */
- int rc=sceSystemServiceLoadExec("exit",NULL);
- char m[48];snprintf(m,sizeof(m),"exit: system close rc=0x%x",rc);logline(m);
- if(rc>=0)for(int i=0;i<100;i++)sceKernelUsleep(100000);
- return 0;
+ return close_app();
 }

@@ -12,10 +12,8 @@ void notify(const char*message){
 __attribute__((section(".text.launcher"))) int _start(void){
  int(*version)(void*)=0;struct{u64 size;char text[28];u32 version;}v={.size=40};
  if(resolve("sceKernelGetSystemSwVersion",&version)||!version||version(&v)||v.version!=BTA_FW_VERSION){notify("Bluetooth Audio requires PS4 firmware " BTA_FW_LABEL ".");return 1;}
- long listener=sc3(97,2,1,0);if(listener<0)return 2;
- int one=1;sc5(105,listener,0xffff,4,(long)&one,4);
- struct sockaddr4 sa={.len=16,.family=2,.port=(BTA_PORT>>8)|((BTA_PORT&255)<<8)};
- if(sc3(104,listener,(long)&sa,16)<0||sc3(106,listener,4,0)<0||nonblock(listener)<0){closefd(listener);notify("Bluetooth Audio is already running, or port 8097 is busy. Open http://127.0.0.1:8097/");return 3;}
+ long listener=bta_listen();
+ if(listener<0){notify("Bluetooth Audio is already running, or port 8097 is busy. Open http://127.0.0.1:8097/");return 3;}
  void*(*map)(void*,u64,int,int,int,u64)=0;int(*unmap)(void*,u64)=0;
  int(*create)(void**,void*,void*(*)(void*),void*,const char*)=0;int(*detach)(void*)=0;
  if(resolve("mmap",&map)||resolve("munmap",&unmap)||resolve("scePthreadCreate",&create)||resolve("scePthreadDetach",&detach)||!map||!unmap||!create||!detach){closefd(listener);return 4;}

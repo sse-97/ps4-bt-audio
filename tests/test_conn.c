@@ -25,6 +25,13 @@ void test_conn(void) {
     CHECK_EQ(conn_resumed(1000000, 9000000, CONN_RESUME_GAP_US), 1);    /* 8 s gap */
     CHECK_EQ(conn_resumed(9000000, 1000000, CONN_RESUME_GAP_US), 0);    /* clock went back */
 
+    /* slept: the process clock stops in rest mode while the wall clock runs on. */
+    CHECK_EQ(conn_slept(4000, 4000, CONN_RESUME_GAP_US), 0);              /* normal tick */
+    CHECK_EQ(conn_slept(8000000, 8100000, CONN_RESUME_GAP_US), 0);        /* starved thread: both advance */
+    CHECK_EQ(conn_slept(4000, 720000000, CONN_RESUME_GAP_US), 1);         /* 12 min of rest mode */
+    CHECK_EQ(conn_slept(4000, 4000 + CONN_RESUME_GAP_US, CONN_RESUME_GAP_US), 0); /* exactly the gap */
+    CHECK_EQ(conn_slept(4000, 0, CONN_RESUME_GAP_US), 0);                 /* wall clock set back */
+
     /* Public link state from the explicit state, with the dropped/gave-up flags. */
     CHECK_EQ(conn_link_state(CONN_STREAMING, 0, 0), BT_LINK_STREAMING);
     CHECK_EQ(conn_link_state(CONN_STREAMING, 1, 1), BT_LINK_STREAMING); /* streaming wins */
