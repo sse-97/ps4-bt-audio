@@ -1,0 +1,7 @@
+# Home: service up, nothing paired yet (focus on Add headphones)
+screen=0
+online=1
+link=0
+volume=40
+focus=0
+t=500

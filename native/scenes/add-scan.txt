@@ -1,0 +1,11 @@
+# Add headphones: live scan list while searching
+screen=1
+add_step=1
+add_type=0
+scanning=1
+link=5
+focus=0
+online=1
+dev=AirPods Pro|aabbccddeeff|1
+dev=Beats Studio|222233334444|1
+t=800

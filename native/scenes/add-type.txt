@@ -1,0 +1,6 @@
+# Add headphones: device-type picker with pairing tip
+screen=1
+add_step=0
+focus=0
+online=1
+t=600

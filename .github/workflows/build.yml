@@ -38,11 +38,21 @@ jobs:
           docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/src" -w /src
           ps4-bt-audio-build make dist host-ui
 
-      - name: Render a UI scene with the PC harness
+      - name: Render the UI scenes with the PC harness
         run: |
-          printf 'online=1\nlink=0\n' > build/scene.txt
-          build/host_ui build/scene.txt build/scene.ppm
-          test -s build/scene.ppm
+          mkdir -p build/scenes
+          for scene in native/scenes/*.txt; do
+            name="$(basename "$scene" .txt)"
+            build/host_ui "$scene" "build/scenes/$name.ppm"
+            test -s "build/scenes/$name.ppm"
+            echo "rendered $name"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-scenes-${{ github.sha }}
+          path: build/scenes/
+          if-no-files-found: error
 
       - name: Show checksums
         run: cat build/dist/SHA256SUMS

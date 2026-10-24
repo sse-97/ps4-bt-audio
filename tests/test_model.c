@@ -13,6 +13,7 @@ void test_model(void) {
         "\"future_field\":42,\"volume\":65,\"tv_enabled\":1,\"scanning\":0,"
         "\"pin_pending\":0,\"test\":0,\"link\":2,\"attempts\":1,\"retry_ms\":0,"
         "\"meter\":58,\"quiet_ms\":0,\"connect_rc\":0,\"audio_rc\":0,\"lan\":1,"
+        "\"latency_mode\":2,\"drops\":3,\"underruns\":1,\"state\":\"streaming\","
         "\"pair_code\":\"048213\",\"selected\":\"aabbccddeeff\",\"name\":\"AirPods Pro\","
         "\"devices\":[{\"address\":\"aabbccddeeff\",\"name\":\"AirPods Pro\",\"audio\":1},"
         "{\"address\":\"112233445566\",\"name\":\"JBL Flip 6\",\"audio\":1}]}";
@@ -26,6 +27,10 @@ void test_model(void) {
     CHECK(!strcmp(s.message, "Playing on AirPods Pro"));
     CHECK(!strcmp(s.name, "AirPods Pro"));
     CHECK(!strcmp(s.pair_code, "048213"));
+    CHECK_EQ(s.latency_mode, 2);
+    CHECK_EQ(s.drops, 3);
+    CHECK_EQ(s.underruns, 1);
+    CHECK(!strcmp(s.conn_state, "streaming"));
     CHECK_EQ(s.selected, 0xaabbccddeeffUL);
     CHECK_EQ(s.count, 2);
     CHECK(!strcmp(s.devices[0].name, "AirPods Pro"));
@@ -57,6 +62,8 @@ void test_model(void) {
     CHECK_EQ(s.volume, 0);
     CHECK_EQ(s.count, 0);
     CHECK_EQ(s.name[0], 0);
+    CHECK_EQ(s.latency_mode, 1);  /* balanced default when the service omits it */
+    CHECK_EQ(s.conn_state[0], 0);
 
     /* Not an object, wrong/old api, and an empty string are all rejected. */
     CHECK(model_parse("not json", &s) == 0);

@@ -102,8 +102,13 @@ also start after every jailbreak without opening the app, add the AutoRun entry 
 3. Make sure GoldHEN's **BinLoader (port 9090)** is enabled. It accepts one payload per
    jailbreak (any connection uses it up), so either let the app start the service **or**
    send it from your PC with Option B, not both. Then open **Bluetooth Audio** from
-   the home screen. Triangle scans (or disconnects the headphones while connected), the d-pad selects, X connects (or starts the service if it
-   is offline), Square toggles TV sound, Circle closes the app. The audio service keeps running.
+   the home screen. The app renders at 1080p: the d-pad moves focus, the confirm
+   button connects the focused headphones (or starts the service when it is offline),
+   and the cancel button closes the app — confirm and cancel follow the console's
+   enter-button setting (Cross in most regions, Circle in Japan). Triangle opens the
+   guided **Add headphones** flow, Square toggles TV sound, Options plays a test tone,
+   and L1/R1 change the volume. The list also has **Add headphones** and **Fix a
+   problem** entries. The audio service keeps running after you close the app.
 4. If the service still doesn't start, check `/data/bta_audio/app.log` on the console, or send the
    payload yourself with Option B below.
 

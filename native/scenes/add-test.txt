@@ -1,0 +1,8 @@
+# Add headphones: test-tone confirmation step
+screen=1
+add_step=2
+link=2
+name=AirPods Pro
+test=1
+online=1
+t=600

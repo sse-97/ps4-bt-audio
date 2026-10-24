@@ -36,8 +36,12 @@ static void apply(const char *k, const char *v) {
     else if (!strcmp(k, "quiet_ms")) state.quiet_ms = atoi(v);
     else if (!strcmp(k, "connect_rc")) state.connect_rc = atoi(v);
     else if (!strcmp(k, "audio_rc")) state.audio_rc = atoi(v);
+    else if (!strcmp(k, "latency_mode")) state.latency_mode = atoi(v);
+    else if (!strcmp(k, "drops")) state.drops = atoi(v);
+    else if (!strcmp(k, "underruns")) state.underruns = atoi(v);
     else if (!strcmp(k, "selected")) state.selected = (unsigned long)strtoull(v, 0, 16);
     else if (!strcmp(k, "name")) snprintf(state.name, sizeof(state.name), "%s", v);
+    else if (!strcmp(k, "state")) snprintf(state.conn_state, sizeof(state.conn_state), "%s", v);
     else if (!strcmp(k, "message")) snprintf(state.message, sizeof(state.message), "%s", v);
     else if (!strcmp(k, "meter_s")) meter_s = atoi(v);
     else if (!strcmp(k, "t")) g_now = (uint64_t)atoll(v) * 1000u;

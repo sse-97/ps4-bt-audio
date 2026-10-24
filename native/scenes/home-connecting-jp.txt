@@ -1,0 +1,14 @@
+# Home: pairing in progress, Japanese enter-button layout (Circle confirms)
+screen=0
+online=1
+link=1
+state=pairing
+attempts=2
+volume=55
+selected=aabbccddeeff
+name=WH-1000XM4
+message=Pairing with WH-1000XM4
+dev=WH-1000XM4|aabbccddeeff|1
+dev=JBL Flip 6|112233445566|1
+confirm_circle=1
+t=900

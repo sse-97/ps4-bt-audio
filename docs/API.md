@@ -63,9 +63,8 @@ client may reach without a token.
 | Method & path | Does |
 |---|---|
 | `GET /` | The web control page. |
-| `GET /api/status` | Full state as JSON (see below). |
+| `GET /api/status` | Full state as JSON (see below). The home-screen app and the web page both read this. |
 | `GET /api/timing` | Per-second send statistics for the last ~2 minutes. |
-| `GET /api/native` | Packed binary state for the home-screen app (legacy). |
 | `POST /api/pair/<code>` | Exchange the TV code for a token. |
 | `POST /api/scan` | Start a Bluetooth scan (not while streaming). |
 | `POST /api/select/<MAC>` | Choose a listed audio device and connect. |
@@ -76,6 +75,7 @@ client may reach without a token.
 | `POST /api/pin/<digits>` | Submit a pairing PIN for a headset that asks for one. |
 | `POST /api/tv-on`, `/api/tv-off` | Keep or mute TV sound while streaming. |
 | `POST /api/joint-on`, `/api/joint-off` | Joint-stereo SBC on/off for this device. |
+| `POST /api/latency/<0-2>` | Latency buffer target: 0 lowest, 1 balanced, 2 most stable. |
 | `POST /api/lan-on`, `/api/lan-off` | Turn phone control on/off (console only). |
 | `POST /api/quit` | Stop the service and restore TV sound. |
 
@@ -91,15 +91,17 @@ The important fields:
 | `version` | Release version string. |
 | `message` | Human-readable status line. |
 | `link` | Truthful link state: 0 idle, 1 connecting, 2 playing, 3 lost, 4 failed, 5 searching. |
+| `state` | Granular connection phase as a string (`idle`, `discovering`, `connecting`, `pairing`, `configuring`, `streaming`, `recovering`). |
 | `streaming`, `wanted`, `scanning`, `pin_pending` | Service flags. |
 | `volume`, `meter`, `level` | Headphone volume and output level. |
+| `latency_mode` | Latency buffer target: 0 lowest, 1 balanced, 2 most stable. |
 | `tv_enabled`, `hdmi_muted` | TV-sound preference and current mute state. |
 | `name`, `selected`, `devices[]` | The chosen device and the listed audio devices. |
 | `lan` | 1 if phone control is on. |
 | `pair_code` | The current six-digit code. **Only present for console-local callers**, never in a LAN response. |
 
-Remaining fields (`patch_rc`, `bt_state`, `relinks`, `resyncs`, timing counters,
-…) are diagnostics.
+Remaining fields (`drops`, `underruns`, `patch_rc`, `bt_state`, `relinks`,
+`resyncs`, timing counters, …) are diagnostics.
 
 ## Status codes
 

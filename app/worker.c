@@ -730,23 +730,6 @@ static unsigned status(struct app *a, char *out, unsigned cap, int reveal) {
 static unsigned timing_json(struct app *a, char *out, unsigned cap) {
     return bta_timing_json(a->secs, a->sec_seq, (long)(a->clock() / 1000000), out, cap);
 }
-static unsigned native_status(struct app *a, char *out) {
-    struct bt_native *n = (void *)out;
-    memset(n, 0, sizeof(*n));
-    n->magic = BT_NATIVE_MAGIC; n->version = 2; n->volume = a->volume;
-    n->streaming = a->streaming; n->wanted = a->wanted; n->tv = a->tv;
-    n->muted = a->muted == 1; n->scanning = a->scanning; n->pin_pending = a->pin_pending;
-    n->selected = a->target.address;
-    memcpy(n->message, a->message, sizeof(n->message));
-    for (unsigned i = 0; i < a->devices.count; i++)
-        if (bt_is_audio(&a->devices.items[i]) || a->devices.items[i].address == a->target.address)
-            n->devices[n->count++] = a->devices.items[i];
-    u64 now = a->clock();
-    n->link = link_state(a); n->attempts = (int)a->attempts; n->retry_ms = retry_in_ms(a, now);
-    n->meter = a->meter; n->quiet_ms = quiet_for_ms(a, now); n->test = now < a->test_until;
-    n->connect_rc = (int)a->connect_rc; n->audio_rc = (int)a->last_rc;
-    return sizeof(*n);
-}
 static void response(struct client *c, const char *code, const char *type, const char *body, unsigned n) {
     struct writer w = {c->output, 0, sizeof(c->output)};
     append(&w, "HTTP/1.1 ");
@@ -855,7 +838,6 @@ static void dispatch(struct app *a, struct client *c) {
         response(c, "200 OK", "application/json", body, w.used);
         return;
     }
-    if (starts(c->input, "GET /api/native HTTP/1.")) { if (!authed) { needs_pairing(a, c); return; } unsigned n = native_status(a, body); response(c, "200 OK", "application/octet-stream", body, n); return; }
     if (starts(c->input, "GET /api/status HTTP/1.")) { if (!authed) { needs_pairing(a, c); return; } unsigned n = status(a, body, sizeof(body), c->loopback); response(c, "200 OK", "application/json", body, n); return; }
     if (starts(c->input, "GET /api/timing HTTP/1.")) { if (!authed) { needs_pairing(a, c); return; } unsigned n = timing_json(a, body, sizeof(body)); response(c, "200 OK", "application/json", body, n); return; }
     char *control = header(c->input, "x-bta-control");

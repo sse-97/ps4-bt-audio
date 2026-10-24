@@ -198,6 +198,15 @@ static uint32_t link_color(int l){
   case LINK_LOST:case LINK_FAILED:case LINK_OFFLINE:return RED;default:return GREY;}
 }
 static int secs(int ms){return(ms+999)/1000;}
+static const char*LAT_NAMES[3]={"Lowest","Balanced","Most stable"};
+static int lat_mode(void){int m=state.latency_mode;return m<0||m>2?1:m;}
+/* The connecting phase in words: the service distinguishes pairing and
+ * configuring, which the coarse link state folds into "connecting". */
+static const char*connect_word(void){
+ if(!strcmp(state.conn_state,"pairing"))return "Pairing";
+ if(!strcmp(state.conn_state,"configuring"))return "Configuring";
+ return "Connecting";
+}
 static void dev_name(const struct ui_device*d,char*out,size_t cap){
  const char*src=d->name;size_t len=strlen(src),n=len;
  while(n>0&&(src[n-1]=='?'||src[n-1]==' '))n--;
@@ -302,7 +311,7 @@ static void device_row(const struct ui_ctx*c,int i,int x,int y,int w,int sel){
  char sub[80];sub[0]=0;uint32_t subc=FAINT;
  if(is_t){
   switch(l){
-   case LINK_CONNECTING:if(state.attempts>1)snprintf(sub,sizeof(sub),"Connecting... attempt %d",state.attempts);else snprintf(sub,sizeof(sub),"Connecting...");break;
+   case LINK_CONNECTING:if(state.attempts>1)snprintf(sub,sizeof(sub),"%s... attempt %d",connect_word(),state.attempts);else snprintf(sub,sizeof(sub),"%s...",connect_word());break;
    case LINK_SEARCHING:snprintf(sub,sizeof(sub),"Searching...");break;
    case LINK_LOST:snprintf(sub,sizeof(sub),"Connection lost - reconnecting");break;
    case LINK_FAILED:snprintf(sub,sizeof(sub),"Can't connect");break;
@@ -345,7 +354,7 @@ static void draw_home(const struct ui_ctx*c){
  char sl[64];
  switch(l){
   case LINK_STREAMING:snprintf(sl,sizeof(sl),"Playing");break;
-  case LINK_CONNECTING:if(state.attempts>1)snprintf(sl,sizeof(sl),"Connecting  (attempt %d)",state.attempts);else snprintf(sl,sizeof(sl),"Connecting");break;
+  case LINK_CONNECTING:if(state.attempts>1)snprintf(sl,sizeof(sl),"%s  (attempt %d)",connect_word(),state.attempts);else snprintf(sl,sizeof(sl),"%s",connect_word());break;
   case LINK_SEARCHING:snprintf(sl,sizeof(sl),"Searching");break;
   case LINK_LOST:snprintf(sl,sizeof(sl),"Connection lost");break;
   case LINK_FAILED:snprintf(sl,sizeof(sl),"Can't connect");break;
@@ -354,8 +363,8 @@ static void draw_home(const struct ui_ctx*c){
  }
  if(testing)snprintf(sl,sizeof(sl),"Playing test tone");
  text_c(F_BODY,cx,644,sl,l!=LINK_IDLE?col:DIM,540);
- char detail[64];detail[0]=0;
- if(l==LINK_STREAMING)snprintf(detail,sizeof(detail),state.tv?"TV sound is on":"TV sound is muted");
+ char detail[80];detail[0]=0;
+ if(l==LINK_STREAMING)snprintf(detail,sizeof(detail),"%s  -  %s latency",state.tv?"TV on":"TV muted",LAT_NAMES[lat_mode()]);
  else if(l==LINK_LOST||l==LINK_FAILED){if(state.retry_ms>0)snprintf(detail,sizeof(detail),"Retrying in %ds",secs(state.retry_ms));else snprintf(detail,sizeof(detail),"Retrying...");}
  else if(l==LINK_IDLE)snprintf(detail,sizeof(detail),"Pick headphones on the right");
  if(detail[0])text_c(F_SMALL,cx,680,detail,FAINT,540);
@@ -474,12 +483,24 @@ static const struct problem PROBLEMS[4]={
  {I_SPEAKER,"No sound in the headphones","Connected but silent","Play test tone",
   "Press the confirm button to play a test tone. If it stays silent, the headset may have connected in a silent mode: disconnect and connect again, or forget it on the headset and pair fresh."},
  {I_BANG,"Sound is choppy or cutting out","Stutters, especially online","Show what helps",
-  "Wi-Fi shares the PS4's antenna with Bluetooth. Use a wired LAN cable or switch Wi-Fi to 5 GHz, keep the headset within a few metres and in line of sight, and close other Bluetooth devices."},
+  "Wi-Fi shares the PS4's antenna with Bluetooth: use a wired LAN cable or 5 GHz Wi-Fi, keep the headset close and in sight. The button here steps the latency mode up - Most stable adds a little delay for far fewer dropouts."},
  {I_ROWHP,"My headphones aren't listed","They never show up in the scan","Scan again",
   "Put the headset into pairing mode (not just powered on), keep it close, and scan again. A headset still connected to a phone won't appear - turn Bluetooth off on the phone first."},
  {I_PAD,"The controller feels laggy","Input delay while streaming","Why this happens",
   "The controller and the headset share one radio. The service already keeps controller slots free; if lag persists, lower on-screen Bluetooth load by disconnecting other wireless devices."}};
 
+/* The choppy-sound row (index 1) doubles as the latency control: its subtitle
+ * shows the current mode and its action steps to the next, more stable one. */
+static const char*fix_sub(int i){
+ static char s[48];
+ if(i==1){snprintf(s,sizeof(s),"Now: %s latency",LAT_NAMES[lat_mode()]);return s;}
+ return PROBLEMS[i].sub;
+}
+static const char*fix_action(int i){
+ static char s[32];
+ if(i==1){snprintf(s,sizeof(s),"Use %s",LAT_NAMES[(lat_mode()+1)%3]);return s;}
+ return PROBLEMS[i].action;
+}
 static void draw_fix(const struct ui_ctx*c){
  text(F_BODY,MARGIN,240,"Pick what's happening. Each one has a single step to try.",DIM);
  for(int i=0;i<4;i++){
@@ -489,10 +510,10 @@ static void draw_fix(const struct ui_ctx*c){
   disc(MARGIN+48,y+40,28,mixc(sel?CARDF:CARD,MINT,26),255);
   icon_c(PROBLEMS[i].icon,MARGIN+48,y+40,MINT,255);
   text(F_NAME,MARGIN+92,y+36,PROBLEMS[i].title,TEXT);
-  text(F_SMALL,MARGIN+92,y+62,PROBLEMS[i].sub,FAINT);
-  int cw=text_w(F_SMALLB,PROBLEMS[i].action);
-  if(sel){icon_c(confirm_icon(c),1824-24-cw-26,y+40,btn_glyph_color(confirm_icon(c)),255);text_r(F_SMALLB,1824-24,y+49,PROBLEMS[i].action,TEXT);}
-  else text_r(F_SMALL,1824-24,y+49,PROBLEMS[i].action,SUBTLE);
+  text(F_SMALL,MARGIN+92,y+62,fix_sub(i),FAINT);
+  const char*act=fix_action(i);int cw=text_w(F_SMALLB,act);
+  if(sel){icon_c(confirm_icon(c),1824-24-cw-26,y+40,btn_glyph_color(confirm_icon(c)),255);text_r(F_SMALLB,1824-24,y+49,act,TEXT);}
+  else text_r(F_SMALL,1824-24,y+49,act,SUBTLE);
  }
  /* guidance for the focused problem, plus the service's own last words */
  int fi=c->focus%4;char b1[TBUF],b2[TBUF];
@@ -501,24 +522,25 @@ static void draw_fix(const struct ui_ctx*c){
  int nl=wrap2(F_BODY,PROBLEMS[fi].help,1728-80,b1,b2);
  text(F_BODY,MARGIN+40,772,b1,TEXT);if(nl>1)text(F_BODY,MARGIN+40,810,b2,TEXT);
  char last[TBUF];
- if(state.message[0])snprintf(last,sizeof(last),"Service says: %s",state.message);
+ if(fi==1&&(state.drops||state.underruns))snprintf(last,sizeof(last),"Recent: %d drops, %d underruns.",state.drops,state.underruns);
+ else if(state.message[0])snprintf(last,sizeof(last),"Service says: %s",state.message);
  else snprintf(last,sizeof(last),"Service says: nothing to report.");
  char lb[TBUF];text(F_SMALL,MARGIN+40,852,fit(F_SMALL,last,1728-80,lb),FAINT);
- struct chip chips[2]={{confirm_icon(c),0,0,PROBLEMS[fi].action,DIM},{cancel_icon(c),0,0,"Back",DIM}};
+ struct chip chips[2]={{confirm_icon(c),0,0,fix_action(fi),DIM},{cancel_icon(c),0,0,"Back",DIM}};
  if(!c->pinmode)legend(chips,2);
 }
 
 /* ---- PIN overlay (modal over any screen) ---- */
 static void draw_pin(const struct ui_ctx*c){
  dim_frame(150);
- rrect(580,330,760,420,24,0x1b2a40);rrect(580,330,760,6,3,MINT);
- text_c(F_TITLE,960,416,"Pairing PIN",TEXT,700);
- text_c(F_BODY,960,464,"These headphones ask for a PIN. Try 0000 or 1234.",DIM,700);
+ rrect(540,330,840,420,24,0x1b2a40);rrect(540,330,840,6,3,MINT);
+ text_c(F_TITLE,960,416,"Pairing PIN",TEXT,780);
+ text_c(F_BODY,960,464,"These headphones ask for a PIN. Try 0000 or 1234.",DIM,780);
  for(int i=0;i<4;i++){
   int bx=732+i*120;rrect(bx,504,96,104,16,i==c->digit?MINT:CARD2);
   char tch[2]={c->pin[i],0};text_c(F_TITLE,bx+48,578,tch,i==c->digit?BG_TOP:TEXT,80);
  }
- text_c(F_SMALL,960,676,"Left/Right: digit     Up/Down: change     confirm: submit     cancel: back",FAINT,720);
+ text_c(F_SMALL,960,676,"Left/Right pick a digit      Up/Down change it",FAINT,790);
  struct chip chips[2]={{confirm_icon(c),0,0,"Submit",DIM},{cancel_icon(c),0,0,"Cancel",DIM}};
  legend(chips,2);
 }

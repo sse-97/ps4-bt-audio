@@ -26,8 +26,11 @@ struct ui_state {
     int link, volume, tv, scanning, pin_pending, test, lan;
     int attempts, retry_ms, meter, quiet_ms;
     int connect_rc, audio_rc;
+    int latency_mode;       /* 0 lowest, 1 balanced, 2 most stable (docs/API.md) */
+    int drops, underruns;   /* recent paced-send diagnostics */
     unsigned long selected;
     char name[96];          /* active/target device name */
+    char conn_state[16];    /* granular link phase: idle/connecting/pairing/configuring/... */
     char message[128];      /* human-readable status line */
     char pair_code[8];      /* six digits, present only when lan is on (loopback) */
     int count;
@@ -139,8 +142,12 @@ static int model_parse(const char *body, struct ui_state *s) {
     s->quiet_ms = (int)j_int(body, "quiet_ms", 0);
     s->connect_rc = (int)j_int(body, "connect_rc", 0);
     s->audio_rc = (int)j_int(body, "audio_rc", 0);
+    s->latency_mode = (int)j_int(body, "latency_mode", 1);
+    s->drops = (int)j_int(body, "drops", 0);
+    s->underruns = (int)j_int(body, "underruns", 0);
     s->selected = j_mac(body, "selected");
     j_str(body, "name", s->name, sizeof(s->name));
+    j_str(body, "state", s->conn_state, sizeof(s->conn_state));
     j_str(body, "message", s->message, sizeof(s->message));
     j_str(body, "pair_code", s->pair_code, sizeof(s->pair_code));
     const char *arr = j_member(body, "devices");

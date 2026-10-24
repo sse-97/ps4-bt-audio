@@ -14,8 +14,22 @@
 #include <orbis/SystemService.h>
 #include "ui.h"
 
+/* Bluetooth Audio 2.7.5 home-screen app. It renders the screens in ui.h and
+ * drives the audio service entirely through the JSON control API (docs/API.md):
+ * GET /api/status for state, POST /api/... for actions. It never talks to the
+ * Bluetooth driver itself. */
+
+/* Enter-button assignment (console region setting): 0 = Circle confirms (Japan
+ * and parts of Asia), 1 = Cross confirms. Declared here because not every SDK
+ * header exposes it; the symbol lives in libSceSystemService. */
+#define ENTER_BUTTON_PARAM 1000
+extern int sceSystemServiceParamGetInt(int paramId, int *value);
+
 static int pad=-1,pad_connected;
 static uint64_t pad_retry;
+static struct ui_ctx ctx;
+static char pin_buf[5]="0000";
+static int online;
 
 /* All file I/O uses sceKernel* (never stdio): the app runs in a restricted
  * sandbox where a blocked libc syscall raises SIGSYS. app.log confirms these
@@ -66,34 +80,26 @@ static int http(const char*method,const char*path,void*out,size_t cap){
  if(out&&cap){size_t bytes=0;if(b){b+=4;bytes=used-(size_t)(b-response);if(bytes>cap-1)bytes=cap-1;memcpy(out,b,bytes);}((char*)out)[bytes]=0;}
  return code>0?code:-1;
 }
-/* Reads /api/native. Older services send a shorter reply without the link fields;
- * those are accepted (ext_ok=0) and the UI falls back to the basic flags. */
+/* GET /api/status and parse the JSON into `state` (model.h). Sets `online`. */
+static char status_buf[16384];
 static int refresh(void){
- struct bt_native next;memset(&next,0,sizeof(next));
  int fd=local_socket(8097);if(fd<0){online=0;return -1;}
- const char*req="GET /api/native HTTP/1.1\r\nHost: 127.0.0.1:8097\r\nConnection: close\r\n\r\n";
+ const char*req="GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:8097\r\nX-BTA-Control: 1\r\nConnection: close\r\n\r\n";
  if(write_all(fd,req,strlen(req))){close(fd);online=0;return -1;}
- char resp[8192];size_t used=0;
- while(used<sizeof(resp)){ssize_t n=recv(fd,resp+used,sizeof(resp)-used,0);if(n<=0)break;used+=(size_t)n;}
- close(fd);
- if(used<12||strncmp(resp,"HTTP/1.1 200",12)){online=0;return -1;}
- char*body=0;for(size_t i=0;i+3<used;i++)if(resp[i]=='\r'&&resp[i+1]=='\n'&&resp[i+2]=='\r'&&resp[i+3]=='\n'){body=resp+i+4;break;}
- size_t avail=body?(size_t)(resp+used-body):0;
- if(!body||avail<offsetof(struct bt_native,link)){online=0;return -1;}
- memcpy(&next,body,avail<sizeof(next)?avail:sizeof(next));
- if(next.magic!=BT_NATIVE_MAGIC||next.version!=2||next.count<0||next.count>BT_DEVICE_LIMIT){online=0;return -1;}
- unsigned long selected=(focus>=0&&focus<state.count)?state.devices[focus].address:0;
- state=next;ext_ok=avail>=sizeof(next);state.message[127]=0;for(int i=0;i<state.count;i++)state.devices[i].name[95]=0;
- if(selected){for(int i=0;i<state.count;i++)if(state.devices[i].address==selected)focus=i;}
- if(focus<0||focus>=state.count)focus=0;
- online=1;return 0;
+ size_t used=0;
+ while(used+1<sizeof(status_buf)){ssize_t n=recv(fd,status_buf+used,sizeof(status_buf)-used-1,0);if(n==0)break;if(n<0){close(fd);online=0;return -1;}used+=(size_t)n;}
+ close(fd);status_buf[used]=0;
+ if(used<12||strncmp(status_buf,"HTTP/1.1 200",12)){online=0;return -1;}
+ char*body=strstr(status_buf,"\r\n\r\n");if(!body){online=0;return -1;}body+=4;
+ struct ui_state next;
+ if(!model_parse(body,&next)){online=0;return -1;}
+ state=next;online=1;return 0;
 }
 static void set_notice(const char*s){snprintf(notice,sizeof(notice),"%s",s);notice_until=g_now+6000000;}
 /* The audio service normally starts at boot (GoldHEN AutoRun). If it is not running
  * when the app opens, send the bundled payload to GoldHEN's local BinLoader (port 9090)
  * once. The payload's launcher refuses to start twice, and we only try while port 8097
  * is not answering. The payload goes out on a single connection: never probe 9090. */
-static void service_check(void){refresh();}
 static int launch_attempted;
 static void start_service(void){
  if(online||launch_attempted)return;launch_attempted=1;
@@ -110,6 +116,8 @@ static void start_service(void){
  logline(rc?"start: send failed":"start: payload sent to BinLoader");
  if(!rc)set_notice("Starting audio service...");
 }
+/* POST an action, then refresh. 200 clears the notice; an error shows the
+ * service's plain-text reason (error bodies are text, success bodies are JSON). */
 static void action(const char*path){
  char body[160];int code=http("POST",path,body,sizeof(body));
  if(code==200)notice[0]=0;
@@ -117,16 +125,26 @@ static void action(const char*path){
  else{for(int i=0;body[i];i++)if(body[i]=='\n'||body[i]=='\r')body[i]=0;set_notice(body[0]?body:"That didn't work.");}
  refresh();
 }
+static void select_focused(void){
+ if(ctx.focus<0||ctx.focus>=state.count)return;
+ char path[64];snprintf(path,sizeof(path),"/api/select/%012lX",state.devices[ctx.focus].address);action(path);
+}
 static void volume_change(int amount){
  if(!online)return;int value=state.volume+amount;if(value<0)value=0;if(value>100)value=100;
  char path[40];snprintf(path,sizeof(path),"/api/volume/%d",value);action(path);
 }
-static void activate(void){
- if(!online){launch_attempted=0;service_check();start_service();return;}
- if(state.count<=0||focus<0||focus>=state.count)return;
- const struct bt_device*d=&state.devices[focus];int l=ui_link();
- if(d->address==state.selected&&l!=BT_LINK_IDLE){action("/api/stop");return;}
- char path[64];snprintf(path,sizeof(path),"/api/select/%012lX",d->address);action(path);
+
+/* ---- focus helpers ---- */
+static int home_ring(void){return state.count+2;}          /* devices + Add + Fix */
+static void clamp_home_focus(void){
+ int ring=home_ring();if(ctx.focus<0)ctx.focus=0;if(ctx.focus>=ring)ctx.focus=ring-1;
+ if(ctx.focus<state.count){int vis=4;if(ctx.focus<ctx.top)ctx.top=ctx.focus;if(ctx.focus>=ctx.top+vis)ctx.top=ctx.focus-vis+1;if(ctx.top<0)ctx.top=0;if(ctx.top>state.count-1)ctx.top=state.count>0?state.count-1:0;}
+ else ctx.top=0;
+}
+static void clamp_scan_focus(void){
+ int n=state.count;if(n<=0){ctx.focus=0;ctx.top=0;return;}
+ if(ctx.focus<0)ctx.focus=0;if(ctx.focus>=n)ctx.focus=n-1;
+ int vis=5;if(ctx.focus<ctx.top)ctx.top=ctx.focus;if(ctx.focus>=ctx.top+vis)ctx.top=ctx.focus-vis+1;if(ctx.top<0)ctx.top=0;
 }
 
 static unsigned char snaprow[WIDTH*3];
@@ -140,60 +158,114 @@ static void snapshot(void){
  }
  sceKernelClose(fd);logline("snapshot: written");
 }
+
 int main(void){
  sceKernelMkdir("/data/bta_audio",0777);sceKernelChmod("/data/bta_audio",0777);logline("Bluetooth Audio 2.7.5 native app starting");
  int video=sceVideoOutOpen(0xff,0,0,0);if(video<0){logline("VideoOutOpen failed");return 1;}
- off_t memory;size_t size=8*1024*1024;void*base=0;
+ off_t memory;size_t fbbytes=(size_t)WIDTH*HEIGHT*4;size_t size=(2*fbbytes+0x1FFFFF)&~(size_t)0x1FFFFF;void*base=0;
  if(sceKernelAllocateDirectMemory(0,sceKernelGetDirectMemorySize(),size,0x200000,3,&memory)<0||sceKernelMapDirectMemory(&base,size,0x33,0,memory,0x200000)<0){logline("Video memory failed");return 2;}
- void*buffers[2]={base,(char*)base+WIDTH*HEIGHT*4};OrbisVideoOutBufferAttribute attr;
+ void*buffers[2]={base,(char*)base+fbbytes};OrbisVideoOutBufferAttribute attr;
  sceVideoOutSetBufferAttribute(&attr,0x80000000,1,0,WIDTH,HEIGHT,WIDTH);
  if(sceVideoOutRegisterBuffers(video,0,buffers,2,&attr)<0){logline("Register buffers failed");return 3;}
  sceVideoOutSetFlipRate(video,1);
  OrbisUserServiceInitializeParams userparams={ORBIS_KERNEL_PRIO_FIFO_LOWEST};
  int user_rc=sceUserServiceInitialize(&userparams);int pad_rc=scePadInit();
  char diag[128];snprintf(diag,sizeof(diag),"User init=0x%x Pad init=0x%x",user_rc,pad_rc);logline(diag);
+ /* Region enter-button setting: confirm with Circle where the console does. */
+ int enter=1;if(sceSystemServiceParamGetInt(ENTER_BUTTON_PARAM,&enter)<0)enter=1;ctx.confirm_circle=(enter==0);
+ ctx.pin=pin_buf;
  sceSystemServiceHideSplashScreen();
- logline("Checking audio service");service_check();start_service();
+ logline("Checking audio service");refresh();start_service();
  logline("Starting display loop");
- focus=0;for(int i=0;i<state.count;i++)if(state.devices[i].address==state.selected)focus=i;
- unsigned previous=0;int buffer=0,armed=0;long flip=0;uint64_t poll=0,repeat=0,first_draw=0,snap_cd=0;int pinmode=0,pinignore=0,digit=0,auto_snapped=0;char pin[5]="0000";
+ unsigned previous=0;int buffer=0,armed=0;long flip=0;uint64_t poll=0,repeat=0,first_draw=0,snap_cd=0;
+ int pinmode=0,pinignore=0,digit=0,auto_snapped=0,scan_connecting=0,test_fired=0;char pin[5]="0000";
  for(;;){
   uint64_t now=sceKernelGetProcessTime();g_now=now;
-  int l=ui_link();
-  if(now>=poll){refresh();poll=now+(!online?2000000:(l==BT_LINK_STREAMING?300000:500000));}
+  int l=online?(state.link>=LINK_IDLE&&state.link<=LINK_SEARCHING?state.link:LINK_IDLE):LINK_OFFLINE;
+  if(now>=poll){
+   int remember=(ctx.screen==SCREEN_HOME&&ctx.focus<state.count)?1:0;unsigned long faddr=remember?state.devices[ctx.focus].address:0;
+   refresh();poll=now+(!online?2000000:(l==LINK_STREAMING?300000:500000));
+   l=online?(state.link>=LINK_IDLE&&state.link<=LINK_SEARCHING?state.link:LINK_IDLE):LINK_OFFLINE;
+   if(remember){for(int i=0;i<state.count;i++)if(state.devices[i].address==faddr){ctx.focus=i;break;}}
+  }
+  /* Keep the cursor valid even when the device list changes between polls. */
+  if(ctx.screen==SCREEN_HOME)clamp_home_focus();
+  else if(ctx.screen==SCREEN_ADD&&ctx.add_step==ADD_SCAN)clamp_scan_focus();
+  else if(ctx.screen==SCREEN_ADD){if(ctx.focus<0||ctx.focus>2)ctx.focus=0;}
+  else if(ctx.screen==SCREEN_FIX){if(ctx.focus<0||ctx.focus>3)ctx.focus=0;}
+  /* Auto-advance the Add flow to the test-tone step once the chosen device is playing. */
+  if(ctx.screen==SCREEN_ADD&&ctx.add_step==ADD_SCAN&&scan_connecting&&l==LINK_STREAMING){
+   ctx.add_step=ADD_TEST;scan_connecting=0;if(!test_fired){action("/api/test");test_fired=1;}
+  }
+  /* PIN prompt rises and falls with the service flag. */
   if(!state.pin_pending)pinignore=0;if(state.pin_pending&&!pinmode&&!pinignore){pinmode=1;digit=0;memcpy(pin,"0000",5);}
+  ctx.pinmode=pinmode;ctx.digit=digit;memcpy(pin_buf,pin,5);
+
   unsigned buttons=controller(now);
-  /* A button still held from launching the app is not a new press. */
   if(!armed&&pad_connected){previous=buttons;armed=1;}
   unsigned pressed=buttons&~previous;
   if(buttons==previous&&now>=repeat){pressed=buttons&(ORBIS_PAD_BUTTON_UP|ORBIS_PAD_BUTTON_DOWN|ORBIS_PAD_BUTTON_LEFT|ORBIS_PAD_BUTTON_RIGHT|ORBIS_PAD_BUTTON_L1|ORBIS_PAD_BUTTON_R1);repeat=now+150000;}
   else if(buttons!=previous)repeat=now+450000;
   previous=buttons;
   if(!armed)pressed=0;
+
+  unsigned CONFIRM=ctx.confirm_circle?ORBIS_PAD_BUTTON_CIRCLE:ORBIS_PAD_BUTTON_CROSS;
+  unsigned CANCEL =ctx.confirm_circle?ORBIS_PAD_BUTTON_CROSS :ORBIS_PAD_BUTTON_CIRCLE;
+
   if(pinmode){
    if(pressed&ORBIS_PAD_BUTTON_LEFT)digit=(digit+3)%4;if(pressed&ORBIS_PAD_BUTTON_RIGHT)digit=(digit+1)%4;
    if(pressed&ORBIS_PAD_BUTTON_UP)pin[digit]=(char)('0'+(pin[digit]-'0'+1)%10);if(pressed&ORBIS_PAD_BUTTON_DOWN)pin[digit]=(char)('0'+(pin[digit]-'0'+9)%10);
-   if(pressed&ORBIS_PAD_BUTTON_CIRCLE){pinmode=0;pinignore=1;}
-   if(pressed&ORBIS_PAD_BUTTON_CROSS){char path[40];snprintf(path,sizeof(path),"/api/pin/%s",pin);logline("action: pin");action(path);pinmode=0;pinignore=1;}
-  }else{
-   if(pressed&ORBIS_PAD_BUTTON_CIRCLE)break;
-   if(state.count>0){
-    if(pressed&ORBIS_PAD_BUTTON_DOWN)focus=(focus+1)%state.count;
-    if(pressed&ORBIS_PAD_BUTTON_UP)focus=(focus+state.count-1)%state.count;
+   if(pressed&CANCEL){pinmode=0;pinignore=1;}
+   if(pressed&CONFIRM){char path[40];snprintf(path,sizeof(path),"/api/pin/%s",pin);logline("action: pin");action(path);pinmode=0;pinignore=1;}
+  }else if(ctx.screen==SCREEN_ADD){
+   if(ctx.add_step==ADD_TYPE){
+    if(pressed&ORBIS_PAD_BUTTON_LEFT)ctx.focus=(ctx.focus+2)%3;
+    if(pressed&ORBIS_PAD_BUTTON_RIGHT)ctx.focus=(ctx.focus+1)%3;
+    if(pressed&CONFIRM){ctx.add_type=ctx.focus;ctx.add_step=ADD_SCAN;ctx.focus=0;ctx.top=0;logline("action: scan (add)");action("/api/scan");}
+    if(pressed&CANCEL){ctx.screen=SCREEN_HOME;ctx.focus=state.count;clamp_home_focus();}
+   }else if(ctx.add_step==ADD_SCAN){
+    if(pressed&ORBIS_PAD_BUTTON_DOWN)ctx.focus++;if(pressed&ORBIS_PAD_BUTTON_UP)ctx.focus--;clamp_scan_focus();
+    if(pressed&CONFIRM){if(state.count>0){scan_connecting=1;test_fired=0;logline("action: select (add)");select_focused();}}
+    if(pressed&ORBIS_PAD_BUTTON_TRIANGLE){logline("action: scan again");action("/api/scan");}
+    if(pressed&CANCEL){ctx.add_step=ADD_TYPE;ctx.focus=ctx.add_type;}
+   }else{ /* ADD_TEST */
+    if(pressed&CONFIRM){ctx.screen=SCREEN_HOME;ctx.focus=0;clamp_home_focus();}
+    if(pressed&ORBIS_PAD_BUTTON_TRIANGLE){logline("action: test again");action("/api/test");if(!notice[0])testing_until=g_now+2200000;}
+    if(pressed&CANCEL){ctx.screen=SCREEN_FIX;ctx.focus=0;}
    }
-   if(pressed&ORBIS_PAD_BUTTON_CROSS){logline("action: connect/disconnect");activate();}
-   if(pressed&ORBIS_PAD_BUTTON_TRIANGLE){if(online&&l!=BT_LINK_IDLE){logline("action: disconnect");action("/api/stop");}else{logline("action: scan");action("/api/scan");}}
+  }else if(ctx.screen==SCREEN_FIX){
+   if(pressed&ORBIS_PAD_BUTTON_DOWN)ctx.focus=(ctx.focus+1)%4;if(pressed&ORBIS_PAD_BUTTON_UP)ctx.focus=(ctx.focus+3)%4;
+   if(pressed&CONFIRM){
+    if(ctx.focus==0){logline("fix: test");action("/api/test");if(!notice[0])testing_until=g_now+2200000;}
+    else if(ctx.focus==1){int nm=(lat_mode()+1)%3;char path[32];snprintf(path,sizeof(path),"/api/latency/%d",nm);logline("fix: latency");action(path);}
+    else if(ctx.focus==2){ctx.screen=SCREEN_ADD;ctx.add_step=ADD_SCAN;ctx.focus=0;ctx.top=0;logline("fix: scan");action("/api/scan");}
+   }
+   if(pressed&CANCEL){ctx.screen=SCREEN_HOME;ctx.focus=state.count+1;clamp_home_focus();}
+  }else{ /* SCREEN_HOME */
+   if(pressed&ORBIS_PAD_BUTTON_DOWN)ctx.focus=(ctx.focus+1)%home_ring();
+   if(pressed&ORBIS_PAD_BUTTON_UP)ctx.focus=(ctx.focus+home_ring()-1)%home_ring();
+   clamp_home_focus();
+   if(pressed&CONFIRM){
+    if(!online){launch_attempted=0;refresh();start_service();}
+    else if(ctx.focus<state.count){
+     if(state.devices[ctx.focus].address==state.selected&&l!=LINK_IDLE){logline("action: disconnect");action("/api/stop");}
+     else{logline("action: connect");select_focused();}
+    }else if(ctx.focus==state.count){ctx.screen=SCREEN_ADD;ctx.add_step=ADD_TYPE;ctx.focus=ctx.add_type;}
+    else{ctx.screen=SCREEN_FIX;ctx.focus=0;}
+   }
+   if(pressed&ORBIS_PAD_BUTTON_TRIANGLE){ctx.screen=SCREEN_ADD;ctx.add_step=ADD_TYPE;ctx.focus=ctx.add_type;}
    if(pressed&ORBIS_PAD_BUTTON_SQUARE){logline("action: tv");action(state.tv?"/api/tv-off":"/api/tv-on");}
-   if(pressed&ORBIS_PAD_BUTTON_OPTIONS){logline("action: test sound");action("/api/test");if(!notice[0])testing_until=g_now+2200000;}
+   if(pressed&ORBIS_PAD_BUTTON_OPTIONS){logline("action: test");action("/api/test");if(!notice[0])testing_until=g_now+2200000;}
    if(pressed&(ORBIS_PAD_BUTTON_L1|ORBIS_PAD_BUTTON_LEFT))volume_change(-5);
    if(pressed&(ORBIS_PAD_BUTTON_R1|ORBIS_PAD_BUTTON_RIGHT))volume_change(5);
+   if(pressed&CANCEL)break;
   }
-  if(focus<0||focus>=state.count)focus=0;
-  if(focus<top)top=focus;if(focus>=top+5)top=focus-4;if(top<0)top=0;
-  {int target=(ext_ok&&ui_link()==BT_LINK_STREAMING)?state.meter:0;if(target<0)target=0;if(target>100)target=100;
+  ctx.online=online;
+
+  {int target=(online&&l==LINK_STREAMING)?state.meter:0;if(target<0)target=0;if(target>100)target=100;
    if(target>meter_s)meter_s+=(target-meter_s+1)/2;else meter_s-=(meter_s-target+3)/4;}
   if(notice[0]&&g_now>=notice_until)notice[0]=0;
-  draw(pinmode,pin,digit);
+  draw(&ctx);
   memcpy(buffers[buffer],back,sizeof(back));
   if(!first_draw)first_draw=now;
   if(!auto_snapped&&now-first_draw>2000000){snapshot();auto_snapped=1;}
