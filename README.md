@@ -120,11 +120,11 @@ also start after every jailbreak without opening the app, add the AutoRun entry 
    **Audio Latency**, **Allow Phone Control** and **Stop Audio Service**. The confirm
    button connects the focused device; on the connected one it opens the Options menu
    (**Test Sound**, **Disconnect**), as does the Options button. The cancel button goes
-   back from sub-screens and menus, and on the main screen to the home screen. Confirm
-   and cancel follow the console's enter-button setting (Cross in most regions, Circle in
-   Japan). The app is a mini app like the system's own: it opens next to a running game
-   without closing it, stays open when you leave it (cancel button or PS button), like the
-   Internet Browser, and closes from the Quick Menu (**Close Application**).
+   back from sub-screens and menus; on the main screen it reminds you that the PS button
+   leaves the app. Confirm and cancel follow the console's enter-button setting (Cross in
+   most regions, Circle in Japan). The app is a mini app like the system's own: it opens
+   next to a running game without closing it, stays open when you leave it with the PS
+   button, and closes from the Quick Menu (**Close Application**).
    If the service isn't running, the app offers to start it. The audio service keeps
    running after you close the app; **Stop Audio Service** ends it and disconnects the
    device.

@@ -90,13 +90,18 @@ enum conn_hold_step {
 /* A link-state reading during a dial that shows the attempt itself: neither
  * linked nor the state read just before the dial. */
 static int conn_paging(long state, long before) { return !conn_link_up(state) && state != before; }
+/* The driver is done with a dial: after showing the attempt (`seen`), the link
+ * state is back to the one before it. On 13.52 that reads 1 -> 2 -> 1, and a dial
+ * that doesn't link up ends this way after about 15 s; one that links reaches 6
+ * within 2-9 s. */
+static int conn_dial_ended(long state, long before, int seen) { return seen && state == before; }
 /* The next step of a hold, from the device's latest link state. `seen`: some
  * reading during the dial showed the attempt (conn_paging). */
 static enum conn_hold_step conn_hold_next(enum conn_hold h, long state, long before, int seen,
                                           u64 now, u64 since, u64 page_end) {
     if (h == CONN_HOLD_PAGE) {
         if (conn_link_up(state)) return CONN_HOLD_LINKED;
-        if (seen && state == before) return CONN_HOLD_CANCELLED;
+        if (conn_dial_ended(state, before, seen)) return CONN_HOLD_CANCELLED;
         return now >= page_end ? CONN_HOLD_WINDOW_OVER : CONN_HOLD_WAIT;
     }
     if (h == CONN_HOLD_LINK && conn_link_up(state))

@@ -537,8 +537,8 @@ static void draw(const struct ui_ctx*c){
  else if(noticing)text_c(F_SMALL,960,905,notice,WHITE,1600);
  else if(sc==SCREEN_HOME&&ui_link(c)==LINK_FAILED&&state.message[0])text_c(F_SMALL,960,905,state.message,WHITE,1600);
  if(c->pinmode)draw_pin(c);
- /* Back everywhere: on Home it goes to the home screen and the app stays open. */
- int show_back=1;
+ /* Back on Home only points to the PS button (the app stays open), so it isn't offered there. */
+ int show_back=modal||menu||sc!=SCREEN_HOME;
  /* Search Again only when the radio is free: not while searching or connecting. */
  int search=sc==SCREEN_SCAN&&!modal&&!state.scanning&&ui_link(c)!=LINK_CONNECTING;
  legend(c,menu&&!modal?1440:WIDTH,show_back,search,!modal&&(menu||focus_is_active(c)));
