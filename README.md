@@ -17,8 +17,18 @@ not work. Output only: no microphone or chat input.
   headphones agree to when they connect. The old format (dual channel) made the PS4
   renegotiate the stream with the headphones, and some models stayed connected but silent.
   You can turn joint stereo off per headphone on the web page if a model needs the old format.
-- **Automatic recovery.** If the PS4 refuses audio for 4 seconds, the service drops the
-  Bluetooth link and reconnects by itself (up to 3 times in a row).
+- **Automatic recovery with format fallback.** If a headset connects but stays silent, the
+  service switches the SBC format for you (the step that used to need a manual reconnect)
+  before dropping and re-establishing the link. Reconnect attempts back off 2, 4, 8 then 16
+  seconds; after that it stops and asks you to power-cycle the headphones.
+- **Remembered devices.** The service keeps a profile per headphone — the format that last
+  produced sound, when it last connected — and remembers several. On startup it reconnects
+  to whichever remembered device is turned on, and starts it in the format that worked last.
+- **Explicit connection states.** The link moves through named states (discovering, pairing,
+  connecting, configuring, streaming, recovering), each with its own timeout; the current
+  one is reported as `state` in `GET /api/status`.
+- **Rest-mode resume.** After the console wakes from rest mode the service re-establishes the
+  driver and reconnects on its own.
 - **Disconnect really disconnects.** The Disconnect button (web page, or Triangle in the
   app) drops the Bluetooth link itself, so the next connect starts fresh.
 - **Steadier sending.** Audio goes out from its own thread with the same scheduling the
@@ -34,9 +44,9 @@ volume, connect or stop the service. Use it on a trusted home network only.
 
 ## Known issues
 
-- **Some headphones need a reconnect or two.** If a pair connects but plays nothing, press
-  Disconnect and connect again, or turn the headphones off and on. The automatic recovery
-  handles most of these cases by itself.
+- **A silent headphone usually recovers on its own** now: the service tries the other SBC
+  format and then re-establishes the link. If it still plays nothing after that, turn the
+  headphones off and on, or press Disconnect and connect again.
 - **Brief glitches during game loads** are possible on some headphone models.
 - **Controller drops.** An early build polled the Bluetooth driver while streaming and
   starved the wireless controller's link. The current worker does no driver polling while
