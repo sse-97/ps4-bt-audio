@@ -225,6 +225,16 @@ static int system_away(unsigned buttons,int*behind){
  return over||bg||icpt||resumed;
 }
 
+/* Back on the app's main screen: to the home screen with the app left open behind
+ * it, like the Internet Browser or the PS button. OpenOrbis v0.5.4 declares this
+ * call without a prototype either; a refusal comes back as an error code (< 0). */
+static void to_home_screen(void){
+ int32_t(*go)(void)=(int32_t(*)(void))(void*)sceSystemServiceNavigateToGoHome;
+ int rc=go();
+ char m[48];snprintf(m,sizeof(m),"home: go to home screen rc=0x%x",rc);logline(m);
+ if(rc<0)set_notice("Press the PS button to go to the home screen.");
+}
+
 /* Returning from main ends in a raw exit system call, which the app sandbox
  * refuses with SIGSYS: the system then reports a crash (CE-34878-0). Ask the
  * system to close the app instead, as other homebrew apps (game or mini app) do,
@@ -336,7 +346,7 @@ int main(void){
      * that the service is already running. */
     if(!start_at&&!(starting&&notice[0])){logline("action: start service");start_at=now+800000;starting=1;notice_for("Starting audio service...",30000000);}
    }
-   if(pressed&CANCEL)break;
+   if(pressed&CANCEL){logline("action: home screen");to_home_screen();} /* Close closes; Back never does */
   }else if(ctx.dialog==DLG_STOP){ /* "Stop the audio service?" Stop / Cancel */
    if(pressed&ORBIS_PAD_BUTTON_LEFT)ctx.dialog_focus=0;if(pressed&ORBIS_PAD_BUTTON_RIGHT)ctx.dialog_focus=1;
    if(pressed&CONFIRM){ctx.dialog=DLG_NONE;if(!ctx.dialog_focus){logline("action: quit");action("/api/quit");}}
@@ -383,9 +393,10 @@ int main(void){
     else if(row==ROW_PHONE){logline("action: phone control");action(state.lan?"/api/lan-off":"/api/lan-on");}
     else if(row==ROW_STOP){ctx.dialog=DLG_STOP;ctx.dialog_focus=1;}
    }
-   /* Back does nothing here: like the system's own apps, the app stays open and
-    * the PS button leaves it, so returning to it doesn't start it over. It closes
-    * from the Quick Menu (Close Application). */
+   /* Back goes to the home screen and the app stays open, like the system's own
+    * apps, so returning to it doesn't start it over. It closes from the Quick Menu
+    * (Close Application). */
+   if(pressed&CANCEL){logline("action: home screen");to_home_screen();}
   }
 
   /* Sent, but no service ever answered (e.g. one still running holds the port
