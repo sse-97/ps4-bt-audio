@@ -37,6 +37,9 @@ Tick each box. If anything fails, note the `message`, `state` and the relevant c
 
 ## 2. First connection (guided Add headphones flow)
 
+- [ ] **First-run Home.** On a fresh install with nothing remembered, Home shows a centered
+      gallery hero with **Add headphones** and **Fix a problem** (not an empty list). The
+      PlayStation styling renders: dark surfaces, quiet-authority headings, cyan focus ring.
 - [ ] **Add flow.** Triangle (or the Home list's **Add headphones**) opens the device-type
       picker; choosing a type shows its pairing tip, then a live scan listing audio devices
       newest-first.
@@ -113,7 +116,11 @@ Tick each box. If anything fails, note the `message`, `state` and the relevant c
 
 - [ ] **Fix a problem.** The screen offers the test tone, the latency-mode cycle and a rescan;
       each works.
-- [ ] **Diagnostics.** The web Diagnostics panel and `/api/timing` show live packets, reconnects,
+- [ ] **Phone Settings disclosure.** On the phone page the occasional controls — TV sound,
+      stereo and latency — are grouped under a collapsed **Settings** card, with **Diagnostics**
+      as its own card. Both expand and their controls work. The page renders in the PlayStation
+      style at phone width, in light and dark.
+- [ ] **Diagnostics.** The Diagnostics panel and `/api/timing` show live packets, reconnects,
       resyncs, drops/underruns and late-packet counts.
 - [ ] **App is display-only.** Closing the app leaves the service and audio running.
 

@@ -32,11 +32,13 @@ stability, security and ease of use, with a reproducible Linux build and host te
   loopback; any phone or PC on the LAN can read and change **nothing** until you turn phone
   control on at the console and enter the six-digit code shown on the TV. See
   [`docs/API.md`](docs/API.md).
-- **Redesigned 1080p TV app** with guided *Add headphones* and *Fix a problem* flows,
-  region-correct confirm/cancel buttons, and a live output meter. It talks to the service
-  only through the JSON control API.
-- **Rebuilt phone companion page** — mobile-first, accessible, one contextual primary action
-  — served from the console on port 8097.
+- **Redesigned 1080p TV app** in the PlayStation design system (quiet-authority display type,
+  near-black surfaces, cyan focus), with guided *Add headphones* and *Fix a problem* flows, a
+  centered gallery hero on first run, region-correct confirm/cancel buttons, and a live output
+  meter. It talks to the service only through the JSON control API.
+- **Rebuilt phone companion page** — mobile-first, accessible, same PlayStation styling, one
+  contextual primary action, with occasional controls (TV sound, stereo, latency) grouped
+  under a collapsed **Settings** card. Served from the console on port 8097.
 - **Joint stereo by default** (the format headphones agree to at connect), with a per-device
   toggle for the few models that need dual channel.
 - **Reproducible Linux build and CI.** The payload and PKG build on Linux in a pinned Docker
