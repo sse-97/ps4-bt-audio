@@ -8,8 +8,11 @@
  *   json.h     bounded JSON writer for the status and timing responses
  *   strfmt.h   message/MAC/path string helpers
  *   dsp.h      float capture -> 16-bit PCM, the test tone and the ring maths
- *   core.h     the truthful link-state derivation a UI must show
+ *   conn.h     the connection state machine: link state, backoff and SBC mode
+ *   profiles.h remembered-device table and selection policy
+ *   pacing.h   clock-paced sending with a bounded latency buffer
  *   timing.h   per-second send statistics (GET /api/timing)
+ *   auth.h     LAN pairing and token checks for phone control
  *
  * The firmware-specific driver helpers (bt_devices.c, bt_accept_patch.c) and
  * the single firmware table (firmware.h) sit behind bt_list / bt_prepare /
@@ -659,7 +662,7 @@ static int quiet_for_ms(struct app *a, u64 now) {
 static unsigned status(struct app *a, char *out, unsigned cap, int reveal) {
     u64 now = a->clock();
     struct writer w = {out, 0, cap};
-    append(&w, "{\"version\":\"2.7.5\",\"api\":");
+    append(&w, "{\"version\":\"2.8.0\",\"api\":");
     number(&w, BTA_API_VERSION);
     append(&w, ",\"message\":");
     quoted(&w, a->message);
