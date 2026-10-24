@@ -197,7 +197,9 @@ Put your headphones in pairing mode, then scan and pick them from the app or fro
 sound. The selected headphones are remembered across restarts, and AutoRun reconnects them
 after the jailbreak, so switch them on first.
 
-**Add Device** first lets go of the current device: it stops trying to reconnect, and a
+**Add Device** lists the devices that answer the search, strongest signal first, so put
+the new headphones in pairing mode before opening it; devices you have used before stay
+on the main screen. It first lets go of the current device: it stops trying to reconnect, and a
 device that is playing is disconnected (TV sound comes back while you search). Leaving Add
 Device without choosing reconnects it. The search may take a moment to begin, because a
 search must never run while the PS4 is still trying to connect to a device. On 13.52
@@ -207,6 +209,12 @@ for its 30 s window to pass (see [docs/API.md](docs/API.md)).
 
 To make the PS4 discover headphones from scratch, remove them in **Settings → Devices →
 Bluetooth Devices** (Options, Forget Device), then put them in pairing mode and scan.
+
+**Not every headset plays.** So far a Libratone ONE speaker plays. AirPods Pro (1st and
+2nd generation) and the Xbox Wireless Headset connect, pair and accept every audio
+packet, but stay silent with either stereo format. What differs happens inside the
+console's Bluetooth driver, out of the service's view; finding it needs a recording of
+what the PS4 sends.
 
 ## Latency and audio pacing
 

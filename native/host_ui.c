@@ -59,9 +59,14 @@ static void apply(const char *k, const char *v) {
         d->address = (unsigned long)strtoull(bar + 1, 0, 16);
         const char *bar2 = strchr(bar + 1, '|');
         d->audio = bar2 ? atoi(bar2 + 1) : 1;
-        /* dev=name|address|audio|known; a scene's devices are remembered unless it says 0 */
+        /* dev=name|address|audio|known|found|rssi; a scene's devices are remembered and
+         * answered the search unless it says 0, at -60 dBm unless it gives one */
         const char *bar3 = bar2 ? strchr(bar2 + 1, '|') : 0;
         d->known = bar3 ? atoi(bar3 + 1) : 1;
+        const char *bar4 = bar3 ? strchr(bar3 + 1, '|') : 0;
+        d->found = bar4 ? atoi(bar4 + 1) : 1;
+        const char *bar5 = bar4 ? strchr(bar4 + 1, '|') : 0;
+        d->rssi = bar5 ? atoi(bar5 + 1) : -60;
         state.count++;
     }
 }

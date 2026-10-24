@@ -151,6 +151,11 @@ struct app {
     u64 console_at, add_idle;
     u64 event_at;        /* driver events logged since then (log_event) */
     u32 event_lines, stream_events;
+    /* Devices that answered a search since Add Device opened, with their latest
+     * signal strength in dBm (note_found). The driver's device list also holds
+     * every device it ever knew, so this is what tells who is there now. */
+    struct { u64 address; int rssi; } found[BT_DEVICE_LIMIT];
+    u32 found_count;
     struct client clients[4];
     /* LAN access control (see auth.h). The console reaches the service over the
      * loopback address and always has full access; LAN clients must pair. */
@@ -377,9 +382,26 @@ static void mute(struct app *a, int on) {
     long result[4] = {a->hdmi, a->hdmi_rc, on, v};
     put("/data/bt_hdmi_mute_status.bin", result, sizeof(result));
 }
+/* A device answered the search (driver event 1 or 16): remember it, with its
+ * latest signal strength. */
+static void note_found(struct app *a, u64 address, int rssi) {
+    for (u32 i = 0; i < a->found_count; i++)
+        if (a->found[i].address == address) { a->found[i].rssi = rssi; return; }
+    if (a->found_count < BT_DEVICE_LIMIT) {
+        a->found[a->found_count].address = address;
+        a->found[a->found_count].rssi = rssi;
+        a->found_count++;
+    }
+}
+static int found_rssi(const struct app *a, u64 address, int *rssi) {
+    for (u32 i = 0; i < a->found_count; i++)
+        if (a->found[i].address == address) { *rssi = a->found[i].rssi; return 1; }
+    return 0;
+}
 /* Stop a running search; the radio rests before the next dial. */
 static void end_scan(struct app *a) {
     if (a->scanning) {
+        log_num(a, "scan: ended, devices that answered: ", (long)a->found_count);
         if (a->bt >= 0) sc3(SYS_ioctl, a->bt, BT_SCAN_STOP, 0);
         a->radio_quiet_at = a->clock() + CONN_SCAN_QUIET_US;
         a->add_idle = a->clock();
@@ -727,6 +749,7 @@ static void release_link(struct app *a) {
 static void begin_add(struct app *a, enum conn_add who) {
     a->add_idle = a->clock();
     if (a->adding) { if (!a->scanning) a->scan_wait = 1; return; }
+    a->found_count = 0; /* list who answers from now on */
     int playing = a->streaming, dialling = a->page_at != 0;
     a->adding = who;
     a->resume = a->wanted && !a->give_up;
@@ -827,6 +850,10 @@ static void bluetooth_tick(struct app *a, u64 now) {
         long n = sc3(SYS_read, a->bt, (long)ev, sizeof(ev));
         if (n > 0 && n <= (long)sizeof(ev))
             for (unsigned i = 0; i < (unsigned)n / sizeof(ev[0]); i++) {
+                /* A device answering the search: 1 with its class of device as
+                 * data, 16 after it; the subtype is the signal strength (dBm, as a
+                 * signed byte). Dozens per search, so recorded, not logged. */
+                if (ev[i].type == 1 || ev[i].type == 16) { note_found(a, ev[i].address, (signed char)ev[i].subtype); continue; }
                 log_event(a, &ev[i], now);
                 /* Pairing only happens during connection setup. Ignoring these
                  * while streaming keeps the state == CONN_STREAMING invariant that
@@ -1088,6 +1115,9 @@ static unsigned status(struct app *a, char *out, unsigned cap, int reveal) {
         quoted(&w, d->name);
         field(&w, "audio", !!(d->services & 8));
         field(&w, "known", bta_profile_known(&a->profiles, d->address));
+        int rssi = 0, found = found_rssi(a, d->address, &rssi);
+        field(&w, "found", found); /* always both, so a reader never takes them from the next device */
+        field(&w, "rssi", rssi);
         append(&w, "}");
     }
     append(&w, "]}");
