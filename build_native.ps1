@@ -34,7 +34,7 @@ $tool = Join-Path $bin 'PkgTool.Core.exe'
 if ($LASTEXITCODE) { throw 'SFO create failed' }
 $entries = @(
     @('APP_TYPE','Integer','4','1'), @('APP_VER','Utf8','8',$sfoVersion),
-    @('ATTRIBUTE','Integer','4','0'), @('CATEGORY','Utf8','4','gd'),
+    @('ATTRIBUTE','Integer','4','0'), @('CATEGORY','Utf8','4','gde'),  # gde: a mini app that runs alongside a game
     @('CONTENT_ID','Utf8','48','IV0000-BTAD00001_00-BTAUDIO000000001'),
     @('DOWNLOAD_DATA_SIZE','Integer','4','0'), @('SYSTEM_VER','Integer','4','0'),
     @('TITLE','Utf8','128','Bluetooth Audio'), @('TITLE_ID','Utf8','12','BTAD00001'),

@@ -152,6 +152,10 @@ struct app {
     char log[1024];
     u32 log_len;
     u64 log_t0, log_size;
+    u64 stats_at, stream_packets, stream_resyncs; /* audio summary every 10 min (log_stats) */
+    char http_last[96];  /* last failed-request line, so a retrying page logs it once a minute */
+    u64 http_at;
+    u64 status_at;       /* next status.json write (every 10 s) */
 };
 
 /* Fold an observation into the entropy pool. Cheap, called on network events so
@@ -232,25 +236,43 @@ static void persist_lan(struct app *a, int act, const char *code) {
 static void lock_state(struct app *a) { if (a->mlock) a->mlock(&a->mutex); }
 static void unlock_state(struct app *a) { if (a->munlock) a->munlock(&a->mutex); }
 
-/* Service log: every new status message plus a few connection details, stamped
- * with the seconds since the service started, so what happened on the console
- * can be read back over FTP. Each start moves the previous run's log aside. */
+/* Wall-clock microseconds (0 if unavailable): unlike the process clock (a->clock),
+ * it runs on while the console is in rest mode. */
+static u64 wall_us(void) {
+    struct { long sec, usec; } tv = {0, 0};
+    if (sc3(SYS_gettimeofday, (long)&tv, 0, 0) < 0 || tv.sec <= 0) return 0;
+    return (u64)tv.sec * 1000000 + (u64)tv.usec;
+}
+
+/* Service log: every new status message, connection steps, failed requests and an
+ * audio summary, each stamped with the UTC time of day, so what happened on the
+ * console can be read back over FTP and lined up with the app's log and KLog.
+ * Each start, and each SERVICE_LOG_CAP bytes, moves the log to SERVICE_LOG_OLD:
+ * at most two files, and the newest lines are always kept. */
 #define SERVICE_LOG "/data/bta_audio/service.log"
 #define SERVICE_LOG_OLD "/data/bta_audio/service-previous.log"
-#define SERVICE_LOG_CAP 262144 /* bytes per run, so a flapping link can't fill the disk */
+#define SERVICE_LOG_CAP 262144
 static void log_put(struct app *a, const char *s) {
     for (; *s && a->log_len + 2 < sizeof(a->log); s++) a->log[a->log_len++] = *s;
 }
 static void log_text(struct app *a, const char *s) {
     char t[24];
-    u64 ds = (a->clock() - a->log_t0) / 100000; /* tenths of a second */
-    unsigned i = sizeof(t) - 1;
-    t[i] = 0;
-    t[--i] = ' '; t[--i] = ']'; t[--i] = (char)('0' + ds % 10); t[--i] = '.';
-    ds /= 10;
-    do { t[--i] = (char)('0' + ds % 10); ds /= 10; } while (ds && i > 1);
-    t[--i] = '[';
-    log_put(a, t + i);
+    u64 w = wall_us();
+    if (w) { /* "[13:44:02] " */
+        t[0] = '[';
+        clock_text(w / 1000000, t + 1);
+        t[9] = ']'; t[10] = ' '; t[11] = 0;
+        log_put(a, t);
+    } else { /* no wall clock: "[+123.4] ", seconds since the service started */
+        u64 ds = (a->clock() - a->log_t0) / 100000; /* tenths of a second */
+        unsigned i = sizeof(t) - 1;
+        t[i] = 0;
+        t[--i] = ' '; t[--i] = ']'; t[--i] = (char)('0' + ds % 10); t[--i] = '.';
+        ds /= 10;
+        do { t[--i] = (char)('0' + ds % 10); ds /= 10; } while (ds && i > 2);
+        t[--i] = '+'; t[--i] = '[';
+        log_put(a, t + i);
+    }
     log_put(a, s);
     if (a->log_len + 1 < sizeof(a->log)) a->log[a->log_len++] = '\n';
 }
@@ -259,6 +281,23 @@ static void log_num(struct app *a, const char *label, long v) {
     struct writer w = {b, 0, sizeof(b)};
     append(&w, label);
     number(&w, v);
+    log_text(a, b);
+}
+/* This stream so far: minutes, packets, and what the pacer had to fix. */
+static void log_stats(struct app *a, const char *label) {
+    char b[128];
+    struct writer w = {b, 0, sizeof(b)};
+    append(&w, label);
+    number(&w, (long)((a->clock() - a->stream_at) / 60000000));
+    append(&w, " min, ");
+    number(&w, (long)(a->packets - a->stream_packets));
+    append(&w, " packets, ");
+    number(&w, (long)a->drops);
+    append(&w, " drops, ");
+    number(&w, (long)a->underruns);
+    append(&w, " underruns, ");
+    number(&w, (long)(a->resyncs - a->stream_resyncs));
+    append(&w, " resyncs");
     log_text(a, b);
 }
 /* Under the lock: hand over the pending lines. */
@@ -270,7 +309,8 @@ static u32 take_log(struct app *a, char *out) {
 }
 /* Outside the lock: append them to the file. */
 static void write_log(struct app *a, const char *b, u32 n) {
-    if (!n || a->log_size + n > SERVICE_LOG_CAP) return;
+    if (!n) return;
+    if (a->log_size + n > SERVICE_LOG_CAP) { sc3(SYS_rename, (long)SERVICE_LOG, (long)SERVICE_LOG_OLD, 0); a->log_size = 0; }
     long f = sc3(SYS_open, (long)SERVICE_LOG, 0x209, 0644); /* write, create, append */
     if (f < 0) return;
     sc3(SYS_write, f, (long)b, n);
@@ -311,6 +351,7 @@ static void mute(struct app *a, int on) {
 static void stop_audio(struct app *a) {
     if (a->state == CONN_DISCOVERING && a->bt >= 0) { sc3(SYS_ioctl, a->bt, BT_SCAN_STOP, 0); a->scanning = 0; }
     if (a->streaming) {
+        log_stats(a, "audio stopped after ");
         short silence[384];
         memset(silence, 0, sizeof(silence));
         struct audio_req q = {a->target.address, silence, sizeof(silence), 0, 0};
@@ -586,6 +627,7 @@ static void start_audio(struct app *a) {
     }
     a->streaming = 1; a->state = CONN_STREAMING; a->refused_since = 0; a->errors = 0;
     a->stream_at = a->clock(); a->test_until = 0; a->test_next = 0; a->test_phase = 0; a->snap = 0;
+    a->stats_at = a->stream_at + 600000000; a->stream_packets = a->packets; a->stream_resyncs = a->resyncs;
     bta_pace_reset(&a->pace, a->stream_at); a->drops = 0; a->underruns = 0;
     int was_dropped = a->dropped, told = a->announced, fresh = !a->session;
     a->attempts = 0; a->give_up = 0; a->dropped = 0; a->announced = 0; a->session = 1;
@@ -1112,12 +1154,39 @@ static void dispatch(struct app *a, struct client *c) {
     unsigned n = status(a, body, sizeof(body), c->loopback);
     response(c, "200 OK", "application/json", body, n);
 }
-/* Wall-clock microseconds (0 if unavailable): unlike the process clock (a->clock),
- * it runs on while the console is in rest mode. */
-static u64 wall_us(void) {
-    struct { long sec, usec; } tv = {0, 0};
-    if (sc3(SYS_gettimeofday, (long)&tv, 0, 0) < 0 || tv.sec <= 0) return 0;
-    return (u64)tv.sec * 1000000 + (u64)tv.usec;
+/* Log one line per notable request, never the routine polls (the app asks for the
+ * status twice a second): failures, pairings, and https:// attempts the plain-HTTP
+ * server can't answer. A path that carries a secret (the pairing code, a PIN) is
+ * cut before it, and the same line again within a minute is skipped, so a page
+ * that keeps retrying can't fill the log. Called with the lock held. */
+static void log_request(struct app *a, struct client *c, const char *what) {
+    char line[96], req[48];
+    struct writer w = {line, 0, sizeof(line)};
+    append(&w, "http: ");
+    if (what) append(&w, what);
+    else {
+        if (c->head < 12) return;
+        const char *code = c->output + 9;
+        int pair = starts(c->input, "POST /api/pair/");
+        if (code[0] == '2' && !pair) return;
+        unsigned i = 0;
+        for (; c->input[i] && c->input[i] != '\r' && i < sizeof(req) - 1; i++)
+            req[i] = c->input[i] >= 32 && c->input[i] < 127 ? c->input[i] : '?';
+        req[i] = 0;
+        char *p = find(req, " HTTP/");
+        if (p) *p = 0;
+        if ((p = find(req, "/api/pair/"))) p[9] = 0;
+        if ((p = find(req, "/api/pin/"))) p[8] = 0;
+        char status[4] = {code[0], code[1], code[2], 0};
+        if (code[0] == '2') append(&w, "a phone paired");
+        else { append(&w, status); append(&w, " "); append(&w, req); }
+    }
+    append(&w, c->loopback ? " (console)" : " (network)");
+    u64 now = a->clock();
+    if (equal(line, a->http_last) && now - a->http_at < 60000000) return;
+    memcpy(a->http_last, line, w.used + 1);
+    a->http_at = now;
+    log_text(a, line);
 }
 /* Rest mode aborts every socket. The aborted listener still completes a connection
  * and then resets it, so the app and the phone see the service as gone while audio
@@ -1163,8 +1232,14 @@ static void network_tick(struct app *a, u64 now) {
             if (n > 0) {
                 c->used += (unsigned)n;
                 c->input[c->used] = 0;
+                /* 0x16 opens a TLS handshake: the browser asked for https://, which
+                 * this plain-HTTP server can't answer. Close, and say so in the log. */
+                if ((u8)c->input[0] == 0x16) {
+                    lock_state(a); log_request(a, c, "an https:// request; the page is http:// only"); unlock_state(a);
+                    closefd(c->fd); c->fd = -1; continue;
+                }
                 if (find(c->input, "\r\n\r\n")) {
-                    lock_state(a); dispatch(a, c); unlock_state(a);
+                    lock_state(a); dispatch(a, c); log_request(a, c, 0); unlock_state(a);
                     /* A phone-control toggle leaves its file write and TV notice
                      * here, outside the lock, so flash I/O can't stall the sender. */
                     if (a->lan_act) { persist_lan(a, a->lan_act, a->lan_code); a->lan_act = 0; }
@@ -1273,7 +1348,11 @@ void *bta_worker(void *arg) {
     sc3(SYS_chmod, (long)"/data/bta_audio", 0777, 0);
     sc3(SYS_rename, (long)SERVICE_LOG, (long)SERVICE_LOG_OLD, 0);
     a.log_t0 = a.clock();
-    log_text(&a, "Bluetooth Audio service 2.8.0 started");
+    { char m[64], d[11];
+      u64 w = wall_us();
+      date_text(w / 1000000, d);
+      compose(m, sizeof(m), "Bluetooth Audio service 2.8.0 started ", w ? d : "(no clock)", ", times UTC");
+      log_text(&a, m); }
     sc3(SYS_unlink, (long)BTA_STOP, 0, 0);
     resolve("sceKernelGetRandomNumber", &a.getrandom); /* optional; fill_random falls back */
     load_profiles(&a);
@@ -1346,11 +1425,18 @@ void *bta_worker(void *arg) {
             a.meter_peak = 0;
             a.meter_at = now + 80000;
         }
-        if (beat) { n = status(&a, json, sizeof(json), 0); a.level = 0; a.heartbeat = now + 1000000; logn = take_log(&a, logbuf); } /* reveal=0: the code never lands in status.json */
+        if (beat) {
+            /* status.json is only for reading over FTP (clients use /api/status):
+             * every 10 s spares the disk a write a second. reveal=0: the code
+             * never lands in it. */
+            if (now >= a.status_at) { n = status(&a, json, sizeof(json), 0); a.status_at = now + 10000000; }
+            if (a.streaming && now >= a.stats_at) { log_stats(&a, "audio: "); a.stats_at = now + 600000000; }
+            a.level = 0; a.heartbeat = now + 1000000; logn = take_log(&a, logbuf);
+        }
         unlock_state(&a);
         if (beat) {
             /* File I/O stays outside the lock: a slow write must never hold up the sender. */
-            put("/data/bta_audio/status.json", json, n);
+            if (n) put("/data/bta_audio/status.json", json, n);
             write_log(&a, logbuf, logn);
             if (a.profile_dirty) {
                 lock_state(&a);

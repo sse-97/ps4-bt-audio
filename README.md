@@ -158,7 +158,10 @@ python tools/install_bta.py --host <PS4_IP> --disable-autorun   # undo
 | `/data/bta_audio/latency.bin` | Saved latency mode (0 lowest, 1 balanced, 2 most stable) |
 | `/data/bta_audio/lan_on` | Create this empty file to allow phone control; delete it to lock the API to the console |
 | `/data/bta_audio/pair_code.txt` | The current six-digit pairing code, written while phone control is on |
-| `/data/bta_audio/service.log` | The service's log for this run: each status message and connection step, stamped with seconds since it started. `service-previous.log` keeps the run before |
+| `/data/bta_audio/service.log` | The service's log: status messages, connection steps, failed requests and an audio summary every 10 minutes, each stamped with the UTC time. Each start, and every 256 KB, moves it to `service-previous.log` |
+| `/data/bta_audio/app.log` | The TV app's log, UTC times. Past 64 KB it moves to `app-previous.log` |
+| `/data/bta_audio/status.json` | The service's status, rewritten every 10 s (the same fields as `GET /api/status`) |
+| `/data/bta_audio/app-frame.ppm` | A screenshot of the app, saved when you press L3+R3 together |
 | `/data/bta_audio/stop` | Create this empty file over FTP to request a clean shutdown |
 | `/user/app/BTAD00001/` | Where the PKG installs the app (managed by the system) |
 
