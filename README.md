@@ -37,10 +37,20 @@ not work. Output only: no microphone or chat input.
 - **Timing diagnostics.** `GET /api/timing` returns per-second packet timing (sent, refused,
   late, longest gap) for the last two minutes.
 
-## Security note
+## Phone control and security
 
-The control page (port 8097) has no login. Anyone on your local network can scan, change
-volume, connect or stop the service. Use it on a trusted home network only.
+The control server runs on **port 8097**. The home-screen app reaches it over the console's
+own loopback address and always has full access. Any phone or PC on your network is a LAN
+client and, **by default, can read nothing and change nothing**.
+
+To control audio from your phone, turn **phone control** on at the console (or create the
+file `/data/bta_audio/lan_on` over FTP). The service then shows a **six-digit pairing code**
+on the TV (also written to `/data/bta_audio/pair_code.txt`). Enter that code once in the
+browser on `http://<PS4_IP>:8097/`; the phone is remembered until the service restarts or you
+turn phone control off. Connections from outside your local network are always refused.
+
+The full JSON API — endpoints, the pairing flow and the status fields — is documented in
+[`docs/API.md`](docs/API.md).
 
 ## Known issues
 
@@ -123,6 +133,8 @@ python tools/install_bta.py --host <PS4_IP> --disable-autorun   # undo
 | `/data/GoldHEN/payloads.ini` | GoldHEN AutoRun list. The installer adds `/user/data/payloads/BTA-Audio.bin = 1` under `[AutoRun]` and keeps your other entries |
 | `/data/bta_audio/` | Runtime state: saved headphones (`device.bin`), volume, `status.json`, logs |
 | `/data/bta_audio/dual-<address>` | Present only if you turned joint stereo off for that headphone |
+| `/data/bta_audio/lan_on` | Create this empty file to allow phone control; delete it to lock the API to the console |
+| `/data/bta_audio/pair_code.txt` | The current six-digit pairing code, written while phone control is on |
 | `/data/bta_audio/stop` | Create this empty file over FTP to request a clean shutdown |
 | `/user/app/BTAD00001/` | Where the PKG installs the app (managed by the system) |
 
