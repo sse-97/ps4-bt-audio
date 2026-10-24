@@ -22,8 +22,18 @@ static inline int nonblock(long fd){int v=1;return sc3(54,fd,0x8004667e,(long)&v
 void notify(const char*message);
 void* bta_worker(void*);
 #define BTA_PORT 8097
+/* Control-API schema version. Bumped when the JSON shape or the set of
+ * endpoints changes, so a client can tell an old service from a new one
+ * independently of the release version. */
+#define BTA_API_VERSION 3
 #define BTA_STOP "/data/bta_audio/stop"
 #define TV_ON "/data/bt_bta_tv_on"
+/* Phone control: present => LAN clients may pair; absent (default) => the
+ * control API is reachable only from the console itself. The service writes the
+ * current six-digit pairing code to PAIR_CODE while this is on (also shown on
+ * the TV), so the owner can read it over FTP if needed. */
+#define LAN_ON "/data/bta_audio/lan_on"
+#define PAIR_CODE "/data/bta_audio/pair_code.txt"
 /* Diagnostic: if present, skip the 3-slot HCI widening on connect so we can
  * test whether a plain audio link keeps the controller alive. */
 #define NO_WIDEN "/data/bta_audio/no_widen"
