@@ -57,6 +57,66 @@ static enum conn_link_plan conn_plan_link(long btstate, int own) {
     return own ? CONN_REUSE : CONN_DROP_FIRST;
 }
 
+/* Sharing the radio. A search started while the driver is still dialling a
+ * device that doesn't answer leaves the console's Bluetooth unable to connect
+ * anything, the controller included, until a full power-off (13.52: a search
+ * 11 s into a dial dropped the controller 27 s later, and every dial after it
+ * failed at once). Searches and dials alone never did. So the two never overlap:
+ * before a search the service lets go of its device and holds the radio until
+ * the driver shows that it has.
+ *   CONN_HOLD_PAGE  a dial was cancelled. Over once the device's link state is
+ *                   back to the one read before the dial, but only if a reading
+ *                   during the dial showed the attempt at all (so the driver
+ *                   confirms it); otherwise once the dial's window has passed. A
+ *                   redial 32 s after a dial was always accepted, so by then the
+ *                   driver had finished it.
+ *   CONN_HOLD_LINK  a live link was dropped: over once it reads down, given up
+ *                   after CONN_HOLD_LINK_US.
+ * After a hold, or a search, the radio rests briefly before the next one starts. */
+#define CONN_DIAL_WINDOW_US 30000000UL /* how long a dial may take to link up */
+#define CONN_PAGE_END_US    32000000UL /* from the dial: the driver is surely done with it */
+#define CONN_HOLD_LINK_US   15000000UL
+#define CONN_HOLD_QUIET_US   1000000UL /* rest after a hold ends */
+#define CONN_SCAN_QUIET_US   2000000UL /* rest after a search or a failed dial */
+enum conn_hold { CONN_HOLD_NONE = 0, CONN_HOLD_PAGE, CONN_HOLD_LINK };
+enum conn_hold_step {
+    CONN_HOLD_WAIT = 0,
+    CONN_HOLD_CANCELLED,   /* the driver confirms the dial is gone */
+    CONN_HOLD_WINDOW_OVER, /* no confirmation, but the dial's time is up */
+    CONN_HOLD_LINKED,      /* the dial linked up before the cancel: drop that link */
+    CONN_HOLD_DOWN,        /* the dropped link is down (or nothing was held) */
+    CONN_HOLD_STUCK,       /* the dropped link stayed up */
+};
+/* A link-state reading during a dial that shows the attempt itself: neither
+ * linked nor the state read just before the dial. */
+static int conn_paging(long state, long before) { return !conn_link_up(state) && state != before; }
+/* The next step of a hold, from the device's latest link state. `seen`: some
+ * reading during the dial showed the attempt (conn_paging). */
+static enum conn_hold_step conn_hold_next(enum conn_hold h, long state, long before, int seen,
+                                          u64 now, u64 since, u64 page_end) {
+    if (h == CONN_HOLD_PAGE) {
+        if (conn_link_up(state)) return CONN_HOLD_LINKED;
+        if (seen && state == before) return CONN_HOLD_CANCELLED;
+        return now >= page_end ? CONN_HOLD_WINDOW_OVER : CONN_HOLD_WAIT;
+    }
+    if (h == CONN_HOLD_LINK && conn_link_up(state))
+        return now > since && now - since >= CONN_HOLD_LINK_US ? CONN_HOLD_STUCK : CONN_HOLD_WAIT;
+    return CONN_HOLD_DOWN;
+}
+
+/* Add Device pauses reconnecting until the person leaves it. The console app asks
+ * for status every half second while it runs, so silence from it means it was
+ * closed or a game took the screen; a phone has no leave step, so its Add Device
+ * ends a while after its last search did. `busy`: a search runs or waits. */
+#define CONN_ADD_APP_GONE_US 10000000UL
+#define CONN_ADD_PHONE_US    60000000UL
+enum conn_add { CONN_ADD_NONE = 0, CONN_ADD_CONSOLE, CONN_ADD_PHONE };
+static int conn_add_over(enum conn_add who, u64 now, u64 console_at, u64 idle_since, int busy) {
+    if (who == CONN_ADD_CONSOLE) return now > console_at && now - console_at > CONN_ADD_APP_GONE_US;
+    if (who == CONN_ADD_PHONE) return !busy && now > idle_since && now - idle_since > CONN_ADD_PHONE_US;
+    return 0;
+}
+
 /* Reconnect backoff after a failed attempt: 2, 4, 8, 16 s for attempts 1..4,
  * then 0, which means "stop retrying and ask the user". `attempt` counts
  * consecutive failures since the last successful stream (1 = the first). */
@@ -95,6 +155,13 @@ static int conn_link_state(enum conn_state s, int dropped, int gave_up) {
     case CONN_RECOVERING:  return dropped ? BT_LINK_LOST : BT_LINK_FAILED;
     default:               return BT_LINK_CONNECTING; /* CONNECTING/PAIRING/CONFIGURING */
     }
+}
+
+/* An attempt that is due but waits for the radio (a device just chosen, or the one
+ * Add Device paused) is shown as connecting, not as the failure RECOVERING means
+ * otherwise. A link lost mid-stream keeps showing as lost. */
+static int conn_due(enum conn_state s, int dropped, int gave_up, u64 next_try, u64 now) {
+    return s == CONN_RECOVERING && !dropped && !gave_up && next_try <= now;
 }
 
 /* Milliseconds until the next automatic attempt, or 0 when none is pending

@@ -196,6 +196,14 @@ Put your headphones in pairing mode, then scan and pick them from the app or fro
 sound. The selected headphones are remembered across restarts, and AutoRun reconnects them
 after the jailbreak, so switch them on first.
 
+**Add Device** first lets go of the current device: it stops trying to reconnect, and a
+device that is playing is disconnected (TV sound comes back while you search). Leaving Add
+Device without choosing reconnects it. The search may take a moment to begin, because a
+search must never run while the PS4 is still trying to connect to a device. On 13.52
+that combination leaves the console's Bluetooth stuck, controller included, until a
+full power-off. The service waits for the driver to confirm the attempt ended, or
+for its 30 s window to pass (see [docs/API.md](docs/API.md)).
+
 To make the PS4 discover headphones from scratch, remove them in **Settings → Devices →
 Bluetooth Devices** (Options, Forget Device), then put them in pairing mode and scan.
 

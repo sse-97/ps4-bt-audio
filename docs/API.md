@@ -68,8 +68,9 @@ client may reach without a token.
 | `GET /api/status` | Full state as JSON (see below). The home-screen app and the web page both read this. |
 | `GET /api/timing` | Per-second send statistics for the last ~2 minutes. |
 | `POST /api/pair/<code>` | Exchange the TV code for a token. |
-| `POST /api/scan` | Start a Bluetooth scan (not while streaming). |
-| `POST /api/select/<MAC>` | Choose a listed audio device and connect. |
+| `POST /api/scan` | Add Device: stop reconnecting, disconnect the device (or cancel its connection attempt), then search once the radio is free. Again while a search runs or waits: nothing; after it: one more search. |
+| `POST /api/scan-done` | Leave Add Device: stop a search and reconnect the device Add Device paused. |
+| `POST /api/select/<MAC>` | Choose a listed audio device and connect (ends Add Device). |
 | `POST /api/connect` | Connect the selected device. |
 | `POST /api/stop` | Disconnect and restore TV sound. |
 | `POST /api/test` | Play a short test tone. |
@@ -95,7 +96,8 @@ The important fields:
 | `link` | Truthful link state: 0 idle, 1 connecting, 2 playing, 3 lost, 4 failed, 5 searching. |
 | `state` | Connection state-machine name: `idle`, `discovering`, `connecting`, `pairing`, `configuring`, `streaming`, `recovering`. |
 | `attempts`, `retry_ms` | Connection attempt count and milliseconds until the next retry. |
-| `streaming`, `wanted`, `scanning`, `pin_pending` | Service flags. |
+| `streaming`, `wanted`, `scanning`, `pin_pending` | Service flags. `scanning` is also 1 while a requested search waits for the radio. |
+| `adding` | 1 while Add Device pauses reconnecting (see below). |
 | `latency_mode` | Buffering mode: 0 lowest, 1 balanced, 2 most stable. |
 | `drops`, `underruns` | Packets dropped and buffer underruns while streaming (choppy-audio signals). |
 | `volume`, `meter`, `level` | Headphone volume and output level. |
@@ -108,8 +110,33 @@ The important fields:
 Remaining fields (`drops`, `underruns`, `patch_rc`, `bt_state`, `relinks`,
 `resyncs`, timing counters, …) are diagnostics.
 
+## Searching and connecting share the radio
+
+A search started while the service is still trying to connect to a device that
+doesn't answer leaves the PS4's Bluetooth unable to connect anything, the
+controller included, until the console is fully powered off. So a search and a
+connection attempt never run at the same time:
+
+- `POST /api/scan` stops reconnecting. A playing device is disconnected (TV sound
+  comes back) and the search starts once the driver reports the link down. A
+  connection attempt is cancelled, and the search starts once the driver confirms
+  it ended, or, without that confirmation, once the attempt's 30 s window is over.
+  Until then `scanning` is 1.
+- A device chosen during a search, or reconnected after it, is dialled once the
+  search has stopped and the radio rested about 2 s; `link` shows 1 meanwhile.
+- Add Device ends with `POST /api/scan-done`, `/api/select`, `/api/connect` or
+  `/api/stop`; also when the console app stops asking for status for 10 s (it
+  was closed, or a game took the screen), and, for a search started from a
+  phone, a minute after that search ended. Ending it any way but choosing,
+  connecting or disconnecting reconnects the device it paused.
+
+`service.log` records each step: `add: ...` when Add Device starts and ends,
+`radio: dial cancelled after N ms, the driver confirmed it`, `radio: waited N ms
+for the dial to end (no confirmation)` or `radio: link down after N ms`, then
+`scan: started`.
+
 ## Status codes
 
 `200` ok · `400` bad request · `401` pairing required · `403` missing control
-header, non-local host, or wrong/disabled pairing · `409` wrong state (e.g.
-scanning while streaming) · `500` could not save · `503` could not start.
+header, non-local host, or wrong/disabled pairing · `409` wrong state (e.g. a
+test tone with no device connected) · `500` could not save · `503` could not start.

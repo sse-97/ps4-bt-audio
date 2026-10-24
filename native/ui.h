@@ -539,5 +539,7 @@ static void draw(const struct ui_ctx*c){
  if(c->pinmode)draw_pin(c);
  /* Back on Home does nothing (the app stays open; the PS button leaves it), so it isn't offered there. */
  int show_back=modal||menu||sc!=SCREEN_HOME;
- legend(c,menu&&!modal?1440:WIDTH,show_back,sc==SCREEN_SCAN&&!modal&&!state.scanning,!modal&&(menu||focus_is_active(c)));
+ /* Search Again only when the radio is free: not while searching or connecting. */
+ int search=sc==SCREEN_SCAN&&!modal&&!state.scanning&&ui_link(c)!=LINK_CONNECTING;
+ legend(c,menu&&!modal?1440:WIDTH,show_back,search,!modal&&(menu||focus_is_active(c)));
 }
