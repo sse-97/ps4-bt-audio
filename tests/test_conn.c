@@ -87,6 +87,13 @@ void test_conn(void) {
     CHECK_EQ(conn_paging(5, 1), 0);
     CHECK_EQ(conn_paging(-1, 1), 1);
 
+    /* A dial is over once its state is back to the pre-dial one after showing it
+     * (1 -> 2 -> 1); not before it was seen, and not while linked. */
+    CHECK_EQ(conn_dial_ended(1, 1, 1), 1);
+    CHECK_EQ(conn_dial_ended(1, 1, 0), 0);
+    CHECK_EQ(conn_dial_ended(2, 1, 1), 0);
+    CHECK_EQ(conn_dial_ended(6, 1, 1), 0);
+
     /* A cancelled dial: confirmed only when the attempt was seen and the state is
      * back to the one before; else it waits out the dial's window. */
     u64 since = 10000000, end = since + CONN_PAGE_END_US;

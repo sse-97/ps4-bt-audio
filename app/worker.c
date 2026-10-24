@@ -149,6 +149,8 @@ struct app {
     enum conn_add adding;
     int resume, scan_wait;
     u64 console_at, add_idle;
+    u64 event_at;        /* driver events logged since then (log_event) */
+    u32 event_lines, stream_events;
     struct client clients[4];
     /* LAN access control (see auth.h). The console reaches the service over the
      * loopback address and always has full access; LAN clients must pair. */
@@ -683,6 +685,7 @@ static void start_audio(struct app *a) {
     a->streaming = 1; a->state = CONN_STREAMING; a->refused_since = 0; a->errors = 0;
     a->stream_at = a->clock(); a->test_until = 0; a->test_next = 0; a->test_phase = 0; a->snap = 0;
     a->stats_at = a->stream_at + 600000000; a->stream_packets = a->packets; a->stream_resyncs = a->resyncs;
+    a->stream_events = 0;
     bta_pace_reset(&a->pace, a->stream_at); a->drops = 0; a->underruns = 0;
     int was_dropped = a->dropped, told = a->announced, fresh = !a->session;
     a->attempts = 0; a->give_up = 0; a->dropped = 0; a->announced = 0; a->session = 1;
@@ -786,6 +789,29 @@ static void radio_tick(struct app *a, u64 now) {
     if (a->adding && conn_add_over(a->adding, now, a->console_at, a->add_idle, a->scanning || a->scan_wait))
         end_add(a, a->adding == CONN_ADD_CONSOLE ? "add: ended, the app went away" : "add: ended, no device was chosen", 1);
 }
+/* One message from the driver (read from /dev/bt). */
+struct bt_event { u8 type, subtype; u16 reserved; u32 data; u64 address; };
+/* Driver events go to service.log: the service answers two kinds (3: PIN wanted,
+ * 4: accept pairing), and what a device that won't connect or play is asking for
+ * would be among the rest. At most 12 lines in 10 s, and while audio plays only
+ * the stream's first 20, so a chatty link can't push everything else out. */
+static void log_event(struct app *a, const struct bt_event *e, u64 now) {
+    if (a->streaming && a->stream_events++ >= 20) return;
+    if (now >= a->event_at + 10000000) { a->event_at = now; a->event_lines = 0; }
+    if (a->event_lines++ >= 12) return;
+    char b[96], mac[13];
+    struct writer w = {b, 0, sizeof(b)};
+    append(&w, "bt event: type ");
+    number(&w, e->type);
+    append(&w, ", subtype ");
+    number(&w, e->subtype);
+    append(&w, ", data ");
+    number(&w, (long)e->data);
+    mac_text(e->address, mac);
+    append(&w, e->address == a->target.address ? ", the device " : ", from ");
+    append(&w, mac);
+    log_text(a, b);
+}
 static void bluetooth_tick(struct app *a, u64 now) {
     /* While audio is streaming, do NOT walk the driver cache: refresh_devices()
      * takes the kernel's Bluetooth link lock, and polling it mid-stream starves
@@ -797,10 +823,11 @@ static void bluetooth_tick(struct app *a, u64 now) {
     }
     if (a->scanning && now >= a->scan_end) end_scan(a);
     if (a->bt >= 0) {
-        struct { u8 type, subtype; u16 reserved; u32 data; u64 address; } ev[16];
+        struct bt_event ev[16];
         long n = sc3(SYS_read, a->bt, (long)ev, sizeof(ev));
         if (n > 0 && n <= (long)sizeof(ev))
-            for (unsigned i = 0; i < (unsigned)n / 16; i++)
+            for (unsigned i = 0; i < (unsigned)n / sizeof(ev[0]); i++) {
+                log_event(a, &ev[i], now);
                 /* Pairing only happens during connection setup. Ignoring these
                  * while streaming keeps the state == CONN_STREAMING invariant that
                  * link_state() relies on, and avoids a stray event knocking a live
@@ -809,6 +836,7 @@ static void bluetooth_tick(struct app *a, u64 now) {
                     if (ev[i].type == 4) { u64 q[2] = {a->target.address, 1}; sc3(SYS_ioctl, a->bt, BT_PAIR_ACCEPT, (long)q); }
                     if (ev[i].type == 3) { a->pin_pending = 1; a->state = CONN_PAIRING; a->deadline = now + 60000000; message(a, "This device requires a pairing PIN."); }
                 }
+            }
     }
     radio_tick(a, now);
     if (!a->wanted) return;
@@ -854,6 +882,11 @@ static void bluetooth_tick(struct app *a, u64 now) {
                 if (a->packet_rc) { fail(a, "No supported Bluetooth audio link. Retrying shortly."); return; }
             }
             a->state = CONN_CONFIGURING; a->deadline = now + 400000;
+        } else if (a->state == CONN_CONNECTING && a->page_at && conn_dial_ended(a->btstate, a->page_before, a->page_seen)) {
+            /* The driver gave up on it (after about 15 s): try again now rather
+             * than wait out the rest of the window. */
+            log_ms(a, "connect: the driver ended the dial after ", now - a->page_at, "");
+            fail_named(a, "", " didn't respond. Is it on and nearby?");
         } else if (now >= a->deadline) {
             fail_named(a, "", " didn't respond. Is it on and nearby?");
         }

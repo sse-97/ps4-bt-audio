@@ -225,14 +225,27 @@ static int system_away(unsigned buttons,int*behind){
  return over||bg||icpt||resumed;
 }
 
-/* Back on the app's main screen: to the home screen with the app left open behind
- * it, like the Internet Browser or the PS button. OpenOrbis v0.5.4 declares this
- * call without a prototype either; a refusal comes back as an error code (< 0). */
+/* The output mode the app asks for: none in particular. Left unset, it gets the
+ * system's default picture, so opening it over an HDR game switched the TV out of
+ * HDR and back (KLog: set_mode RGB2020_PQ -> CERGB, Hdmi Init, seconds of black
+ * screen each way). "Any" may let the console keep the game's mode and convert
+ * this picture, as it does for the home screen. OpenOrbis v0.5.4 declares both
+ * calls without prototypes; the mode layout is the one shadPS4 uses. */
+typedef struct { uint32_t size; uint8_t encoding,range,colorimetry,depth; uint64_t refresh_rate,resolution; uint8_t reserved[8]; } VideoOutMode;
+static void any_output_mode(int video){
+ VideoOutMode mode;memset(&mode,0,sizeof(mode));
+ ((void(*)(VideoOutMode*,uint32_t))(void*)sceVideoOutModeSetAny_)(&mode,sizeof(mode));
+ int32_t(*configure)(int32_t,uint32_t,const VideoOutMode*,const void*,uint32_t,uint32_t)=
+  (int32_t(*)(int32_t,uint32_t,const VideoOutMode*,const void*,uint32_t,uint32_t))(void*)sceVideoOutConfigureOutputMode_;
+ int rc=configure(video,0,&mode,NULL,sizeof(mode),0);
+ char m[64];snprintf(m,sizeof(m),"Video output mode: any, rc=0x%x",rc);logline(m);
+}
+
+/* Back on the app's main screen points to the PS button, which leaves the app open.
+ * Not sceSystemServiceNavigateToGoHome: on 13.52 that crashed the system's home
+ * screen (ShellUI) each time, an unhandled 0x80960009 while switching the user. */
 static void to_home_screen(void){
- int32_t(*go)(void)=(int32_t(*)(void))(void*)sceSystemServiceNavigateToGoHome;
- int rc=go();
- char m[48];snprintf(m,sizeof(m),"home: go to home screen rc=0x%x",rc);logline(m);
- if(rc<0)set_notice("Press the PS button to go to the home screen.");
+ set_notice("Press the PS button to go to the home screen.");
 }
 
 /* Returning from main ends in a raw exit system call, which the app sandbox
@@ -255,6 +268,7 @@ int main(void){
  char diag[128];
  int video=sceVideoOutOpen(0xff,0,0,0);
  if(video<0){snprintf(diag,sizeof(diag),"VideoOutOpen failed rc=0x%x",video);logline(diag);return close_app();}
+ any_output_mode(video);
  off_t memory;size_t fbbytes=(size_t)WIDTH*HEIGHT*4;size_t size=(2*fbbytes+0x1FFFFF)&~(size_t)0x1FFFFF;void*base=0;
  size_t dmem=sceKernelGetDirectMemorySize();
  int arc=sceKernelAllocateDirectMemory(0,dmem,size,0x200000,3,&memory),mrc=arc<0?0:sceKernelMapDirectMemory(&base,size,0x33,0,memory,0x200000);

@@ -142,13 +142,17 @@ Tick each box. If anything fails, note the `message`, `state` and the relevant c
       close the game (the app is a mini app, CATEGORY `gde`). The app draws and reads the
       controller; `app.log` shows `Video memory: … alloc=0x0 map=0x0`. Closing it returns
       to the game.
-- [ ] **Stays open like a system app.** Back on Home goes to the home screen, like the
-      Internet Browser (`app.log`: `home: go to home screen rc=0x0`; a negative code
-      means the system refused, and the app says to use the PS button). Back on the
-      "isn't running" dialog does the same; only its Close button closes the app.
-      Leaving with Back or the PS button and coming back (from the home screen or the
-      Quick Menu) shows the app as it was, without starting it over; the button that
-      brought it back does nothing in it. `app.log` shows `focus:` lines for each switch.
+- [ ] **Stays open like a system app.** Back on Home (and on the "isn't running"
+      dialog) shows "Press the PS button to go to the home screen" and closes nothing;
+      only the dialog's Close button closes the app. (The system's go-home call crashed
+      the home screen on 13.52, so the app no longer makes it.) Leaving with the PS
+      button and coming back (from the home screen or the Quick Menu) shows the app as
+      it was, without starting it over; the button that brought it back does nothing in
+      it. `app.log` shows `focus:` lines for each switch.
+- [ ] **No black screen over an HDR game.** With an HDR game running (e.g. Horizon
+      Zero Dawn on an HDR TV), open the app and go back: the TV should not go black.
+      `app.log` shows `Video output mode: any, rc=…`; KLog's `video: port:0 …` line on
+      each switch shows whether the mode still changes (`RGB2020_PQ` vs `CERGB`).
 - [ ] **App is display-only.** Closing the app (Quick Menu > Close Application, or Close in
       the Start dialog) returns to the home screen without an error (no CE-34878-0), and
       leaves the service and audio running. If it does crash, `app.log`'s last `exit:`
@@ -195,6 +199,12 @@ beep). Every check here must leave the controller connected.
       speaker reconnects (`add: ended, no device was chosen`).
 - [ ] **Search Again during a connect.** After choosing a device, Search Again is not
       offered until it has connected or failed.
+- [ ] **Quick retry.** With a device that doesn't answer at once, the next attempt
+      follows about 2 s after the driver gives up (`connect: the driver ended the dial
+      after ~15000 ms`), not after the 30 s window.
+- [ ] **Driver events.** `service.log` has `bt event: type …` lines around each
+      connection attempt (at most 12 in 10 s, and a stream's first 20). With a device
+      that connects but stays silent (e.g. AirPods), they show what it asks for.
 
 ## Known limitations / not verifiable here
 
