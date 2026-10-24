@@ -14,7 +14,7 @@
 #include <orbis/SystemService.h>
 #include "ui.h"
 
-/* Bluetooth Audio 2.7.5 home-screen app. It renders the screens in ui.h and
+/* Bluetooth Audio 2.8.0 home-screen app. It renders the screens in ui.h and
  * drives the audio service entirely through the JSON control API (docs/API.md):
  * GET /api/status for state, POST /api/... for actions. It never talks to the
  * Bluetooth driver itself. */
@@ -160,7 +160,7 @@ static void snapshot(void){
 }
 
 int main(void){
- sceKernelMkdir("/data/bta_audio",0777);sceKernelChmod("/data/bta_audio",0777);logline("Bluetooth Audio 2.7.5 native app starting");
+ sceKernelMkdir("/data/bta_audio",0777);sceKernelChmod("/data/bta_audio",0777);logline("Bluetooth Audio 2.8.0 native app starting");
  int video=sceVideoOutOpen(0xff,0,0,0);if(video<0){logline("VideoOutOpen failed");return 1;}
  off_t memory;size_t fbbytes=(size_t)WIDTH*HEIGHT*4;size_t size=(2*fbbytes+0x1FFFFF)&~(size_t)0x1FFFFF;void*base=0;
  if(sceKernelAllocateDirectMemory(0,sceKernelGetDirectMemorySize(),size,0x200000,3,&memory)<0||sceKernelMapDirectMemory(&base,size,0x33,0,memory,0x200000)<0){logline("Video memory failed");return 2;}
