@@ -132,6 +132,23 @@ struct app {
     struct bt_devices devices;
     int scanning, pin_pending;
     u64 scan_end, list_at;
+    /* Searching and dialling never overlap (conn.h "Sharing the radio").
+     * page_at: when the outstanding dial was sent (0: none), page_end: when the
+     * driver is surely done with it; page_before: the link state read just before
+     * it, page_last: the last one logged, page_seen: a reading showed the attempt.
+     * hold: what the radio waits for (hold_addr's dial or link, since hold_at);
+     * radio_quiet_at: no search or dial starts before this. */
+    u64 page_at, page_end;
+    long page_before, page_last;
+    int page_seen;
+    enum conn_hold hold;
+    u64 hold_at, hold_addr, hold_poll, radio_quiet_at;
+    /* Add Device (conn.h): who opened it; resume: reconnect the device when it
+     * ends; scan_wait: a search is due once the radio is free; console_at: the
+     * console app's latest request; add_idle: since when nothing was searched. */
+    enum conn_add adding;
+    int resume, scan_wait;
+    u64 console_at, add_idle;
     struct client clients[4];
     /* LAN access control (see auth.h). The console reaches the service over the
      * loopback address and always has full access; LAN clients must pair. */
@@ -283,6 +300,16 @@ static void log_num(struct app *a, const char *label, long v) {
     number(&w, v);
     log_text(a, b);
 }
+/* "<pre><milliseconds> ms<post>" */
+static void log_ms(struct app *a, const char *pre, u64 us, const char *post) {
+    char b[96];
+    struct writer w = {b, 0, sizeof(b)};
+    append(&w, pre);
+    number(&w, (long)(us / 1000));
+    append(&w, " ms");
+    append(&w, post);
+    log_text(a, b);
+}
 /* This stream so far: minutes, packets, and what the pacer had to fix. */
 static void log_stats(struct app *a, const char *label) {
     char b[128];
@@ -348,8 +375,17 @@ static void mute(struct app *a, int on) {
     long result[4] = {a->hdmi, a->hdmi_rc, on, v};
     put("/data/bt_hdmi_mute_status.bin", result, sizeof(result));
 }
+/* Stop a running search; the radio rests before the next dial. */
+static void end_scan(struct app *a) {
+    if (a->scanning) {
+        if (a->bt >= 0) sc3(SYS_ioctl, a->bt, BT_SCAN_STOP, 0);
+        a->radio_quiet_at = a->clock() + CONN_SCAN_QUIET_US;
+        a->add_idle = a->clock();
+    }
+    a->scanning = 0;
+}
 static void stop_audio(struct app *a) {
-    if (a->state == CONN_DISCOVERING && a->bt >= 0) { sc3(SYS_ioctl, a->bt, BT_SCAN_STOP, 0); a->scanning = 0; }
+    if (a->state == CONN_DISCOVERING) end_scan(a);
     if (a->streaming) {
         log_stats(a, "audio stopped after ");
         short silence[384];
@@ -375,8 +411,17 @@ static void schedule_backoff(struct app *a) {
     }
     a->next_try = a->clock() + conn_backoff_us(n);
 }
+/* The outstanding dial is over (it failed or ran out its window): the radio rests,
+ * then may search or dial again. */
+static void page_done(struct app *a) {
+    if (!a->page_at) return;
+    a->page_at = 0;
+    u64 quiet = a->clock() + CONN_SCAN_QUIET_US;
+    if (a->radio_quiet_at < quiet) a->radio_quiet_at = quiet;
+}
 /* A failed attempt: stop, explain, and back off before trying again. */
 static void fail(struct app *a, const char *s) {
+    page_done(a);
     stop_audio(a); message(a, s); a->dropped = 0; a->state = CONN_RECOVERING;
     schedule_backoff(a);
 }
@@ -451,11 +496,9 @@ static void refresh_devices(struct app *a) {
     struct bt_device *t = device(a, a->target.address);
     if (t) a->target = *t;
 }
-static void end_scan(struct app *a) {
-    if (a->scanning && a->bt >= 0) sc3(SYS_ioctl, a->bt, BT_SCAN_STOP, 0);
-    a->scanning = 0;
-}
 static int scan(struct app *a) {
+    /* Never while a dial may still be running (conn.h "Sharing the radio"). */
+    if (a->page_at || a->hold) { log_text(a, "scan: not started, a connection attempt holds the radio"); return -1; }
     if (ensure_bt(a)) return -1;
     long rc = sc3(SYS_ioctl, a->bt, BT_SCAN_START, 0);
     log_num(a, "scan: started, rc ", rc); /* the radio is busy for the next 16 s */
@@ -562,6 +605,10 @@ static void load_latency(struct app *a) {
     }
     apply_latency(a, (int)value);
 }
+/* The radio is taken: a search runs or is due, a hold lasts, or it is resting. */
+static int radio_busy(struct app *a, u64 now) {
+    return a->scanning || a->scan_wait || a->hold || now < a->radio_quiet_at;
+}
 /* Ask the driver for a new link to the target. */
 static void dial(struct app *a) {
     u64 address = a->target.address;
@@ -575,6 +622,10 @@ static void dial(struct app *a) {
         return;
     }
     a->own_link = address;
+    /* bluetooth_tick watches the dial; no search starts until it ends. */
+    u64 now = a->clock();
+    a->page_at = now; a->page_end = now + CONN_PAGE_END_US; a->deadline = now + CONN_DIAL_WINDOW_US;
+    a->page_before = a->page_last = a->btstate; a->page_seen = 0;
 }
 static void begin_connect(struct app *a) {
     a->patch_rc = bta_apply_patch();
@@ -607,7 +658,10 @@ static void begin_connect(struct app *a) {
     say(a, "Connecting to ", "...");
     log_num(a, "connect: link state ", a->btstate);
     switch (conn_plan_link(a->btstate, a->own_link == address)) {
-    case CONN_DIAL: dial(a); break;
+    case CONN_DIAL: /* right after a search the radio rests first: bluetooth_tick dials then */
+        if (radio_busy(a, a->clock())) { a->redial_at = a->clock(); log_text(a, "connect: waiting for the radio"); }
+        else dial(a);
+        break;
     case CONN_REUSE: a->connect_rc = 0; break;
     case CONN_DROP_FIRST: /* bluetooth_tick dials once it has closed */
         drop_link(a);
@@ -649,6 +703,89 @@ static void start_audio(struct app *a) {
         notify(m);
     }
 }
+/* Let go of the device: drop its link, which also cancels a dial still running,
+ * and hold the radio until the driver shows that done (radio_tick). */
+static void release_link(struct app *a) {
+    u64 address = a->target.address, now = a->clock();
+    int dialling = a->page_at != 0;
+    a->page_at = 0; a->redial_at = 0;
+    if (a->bt < 0 || !address) { a->own_link = 0; return; }
+    long st = sc3(SYS_ioctl, a->bt, BT_LINK_STATE, (long)&address);
+    sc3(SYS_ioctl, a->bt, BT_DROP_LINK, (long)&address);
+    a->own_link = 0;
+    enum conn_hold h = conn_link_up(st) ? CONN_HOLD_LINK : dialling ? CONN_HOLD_PAGE : CONN_HOLD_NONE;
+    if (h == CONN_HOLD_LINK) log_text(a, "link: dropped");
+    if (h == CONN_HOLD_PAGE) log_num(a, "radio: cancelling the dial, link state ", st);
+    if (h && !a->hold) { a->hold = h; a->hold_at = now; a->hold_addr = address; a->hold_poll = now + 250000; a->page_last = st; }
+}
+/* Add Device (POST /api/scan): stop reconnecting, let go of the device (its audio
+ * and link, or its dial), and search once the radio is free. Asked again while it
+ * lasts: one more search, once the running one is over. */
+static void begin_add(struct app *a, enum conn_add who) {
+    a->add_idle = a->clock();
+    if (a->adding) { if (!a->scanning) a->scan_wait = 1; return; }
+    int playing = a->streaming, dialling = a->page_at != 0;
+    a->adding = who;
+    a->resume = a->wanted && !a->give_up;
+    log_text(a, who == CONN_ADD_CONSOLE ? "add: Add Device opened" : "add: a phone asked for a search");
+    if (a->state == CONN_DISCOVERING) { a->state = CONN_IDLE; log_text(a, "add: using the search already running"); }
+    else if (a->wanted && !playing && a->state != CONN_IDLE) log_text(a, "add: reconnecting stopped");
+    stop_audio(a);
+    a->wanted = 0; a->pin_pending = 0; a->state = CONN_IDLE;
+    a->dropped = a->give_up = a->announced = 0;
+    release_link(a);
+    if (playing) say(a, "", " is disconnected while you add a device. TV sound is back.");
+    else if (dialling) say(a, "Stopped connecting to ", " while you add a device.");
+    a->scan_wait = !a->scanning;
+}
+/* Add Device ends. resume: reconnect the device it paused (it was left, or the app
+ * went away); otherwise the caller decides what happens next. */
+static void end_add(struct app *a, const char *why, int resume) {
+    if (!a->adding) return;
+    log_text(a, why);
+    end_scan(a);
+    a->adding = CONN_ADD_NONE; a->scan_wait = 0;
+    if (resume && a->resume && a->target.address) {
+        a->wanted = 1; a->state = CONN_RECOVERING; a->next_try = 0; a->attempts = 0;
+        a->dropped = a->give_up = a->announced = a->session = 0;
+        say(a, "Reconnecting to ", "...");
+    }
+    a->resume = 0;
+}
+/* Every tick: settle a hold, start the waiting search, end Add Device when its
+ * owner went away (conn.h "Sharing the radio"). */
+static void radio_tick(struct app *a, u64 now) {
+    if (a->hold && now >= a->hold_poll) {
+        a->hold_poll = now + 250000;
+        u64 address = a->hold_addr;
+        long st = a->bt >= 0 ? sc3(SYS_ioctl, a->bt, BT_LINK_STATE, (long)&address) : -1;
+        if (a->hold == CONN_HOLD_PAGE && st != a->page_last) { log_num(a, "radio: link state ", st); a->page_last = st; }
+        enum conn_hold_step step = conn_hold_next(a->hold, st, a->page_before, a->page_seen, now, a->hold_at, a->page_end);
+        if (step == CONN_HOLD_LINKED) {
+            if (a->bt >= 0) sc3(SYS_ioctl, a->bt, BT_DROP_LINK, (long)&address);
+            log_text(a, "radio: the dial linked up anyway; link dropped");
+            a->hold = CONN_HOLD_LINK; a->hold_at = now;
+        } else if (step != CONN_HOLD_WAIT) {
+            u64 waited = now - a->hold_at;
+            if (step == CONN_HOLD_CANCELLED) log_ms(a, "radio: dial cancelled after ", waited, ", the driver confirmed it");
+            else if (step == CONN_HOLD_WINDOW_OVER) log_ms(a, "radio: waited ", waited, " for the dial to end (no confirmation)");
+            else if (step == CONN_HOLD_DOWN) log_ms(a, "radio: link down after ", waited, "");
+            else {
+                log_text(a, "radio: the link stayed up");
+                if (a->scan_wait) { a->scan_wait = 0; say(a, "Couldn't disconnect ", ". Press Search Again to try again."); }
+            }
+            a->hold = CONN_HOLD_NONE;
+            u64 quiet = now + CONN_HOLD_QUIET_US;
+            if (a->radio_quiet_at < quiet) a->radio_quiet_at = quiet;
+        }
+    }
+    if (a->scan_wait && !a->hold && now >= a->radio_quiet_at) {
+        a->scan_wait = 0;
+        if (!a->scanning && scan(a)) message(a, "Bluetooth search could not start. Press Search Again.");
+    }
+    if (a->adding && conn_add_over(a->adding, now, a->console_at, a->add_idle, a->scanning || a->scan_wait))
+        end_add(a, a->adding == CONN_ADD_CONSOLE ? "add: ended, the app went away" : "add: ended, no device was chosen", 1);
+}
 static void bluetooth_tick(struct app *a, u64 now) {
     /* While audio is streaming, do NOT walk the driver cache: refresh_devices()
      * takes the kernel's Bluetooth link lock, and polling it mid-stream starves
@@ -673,9 +810,10 @@ static void bluetooth_tick(struct app *a, u64 now) {
                     if (ev[i].type == 3) { a->pin_pending = 1; a->state = CONN_PAIRING; a->deadline = now + 60000000; message(a, "This device requires a pairing PIN."); }
                 }
     }
+    radio_tick(a, now);
     if (!a->wanted) return;
     if (a->state == CONN_RECOVERING) {
-        if (!a->give_up && now >= a->next_try) { a->attempts++; begin_connect(a); }
+        if (!a->give_up && now >= a->next_try && !radio_busy(a, now)) { a->attempts++; begin_connect(a); }
         return;
     }
     if (a->state == CONN_DISCOVERING) {
@@ -688,8 +826,9 @@ static void bluetooth_tick(struct app *a, u64 now) {
     if (a->state == CONN_CONNECTING || a->state == CONN_PAIRING) {
         u64 address = a->target.address;
         if (a->redial_at) {
-            /* begin_connect dropped a stale link: give it time to close, then dial. */
-            if (now < a->redial_at) return;
+            /* begin_connect dropped a stale link, or found the radio resting after a
+             * search: dial once the link had time to close and the radio is free. */
+            if (now < a->redial_at || radio_busy(a, now)) return;
             a->redial_at = 0;
             a->btstate = sc3(SYS_ioctl, a->bt, BT_LINK_STATE, (long)&address);
             if (!conn_link_up(a->btstate)) { dial(a); return; }
@@ -698,7 +837,14 @@ static void bluetooth_tick(struct app *a, u64 now) {
             a->own_link = address;
         }
         a->btstate = sc3(SYS_ioctl, a->bt, BT_LINK_STATE, (long)&address);
+        if (a->page_at) {
+            /* Whether the driver shows the dial in its link state decides if a
+             * cancel can ever be confirmed (radio_tick), so each change is logged. */
+            if (a->btstate != a->page_last) { log_num(a, "connect: link state ", a->btstate); a->page_last = a->btstate; }
+            if (conn_paging(a->btstate, a->page_before)) a->page_seen = 1;
+        }
         if (conn_link_up(a->btstate)) {
+            a->page_at = 0;
             log_text(a, "connect: link up");
             a->pin_pending = 0;
             if (exists(NO_WIDEN)) {
@@ -818,6 +964,7 @@ static void audio_tick(struct app *a, u64 now) {
 /* The one place the connection's real state is decided (see conn.h). A UI must
  * show this, never infer it from "selected" or "wanted". */
 static int link_state(struct app *a) {
+    if (conn_due(a->state, a->dropped, a->give_up, a->next_try, a->clock())) return BT_LINK_CONNECTING;
     return conn_link_state(a->state, a->dropped, a->give_up);
 }
 static int retry_in_ms(struct app *a, u64 now) {
@@ -854,7 +1001,8 @@ static unsigned status(struct app *a, char *out, unsigned cap, int reveal) {
     field(&w, "underruns", a->underruns);
     field(&w, "refused_ms", a->refused_since ? (long)((now - a->refused_since) / 1000) : 0);
     field(&w, "hdmi_muted", a->muted == 1);
-    field(&w, "scanning", a->scanning);
+    field(&w, "scanning", a->scanning || a->scan_wait); /* a search waiting for the radio counts */
+    field(&w, "adding", a->adding != CONN_ADD_NONE);
     field(&w, "pin_pending", a->pin_pending);
     field(&w, "test", now < a->test_until);
     field(&w, "link", link_state(a));
@@ -1008,6 +1156,7 @@ static void dispatch(struct app *a, struct client *c) {
     char token_hdr[BTA_TOKEN_HEX + 1];
     read_token(c->input, token_hdr);
     int authed = bta_auth_request_ok(&a->auth, c->loopback, token_hdr);
+    if (c->loopback) a->console_at = a->clock(); /* the console app is still there (conn_add_over) */
     /* Pairing: a LAN client posts the code shown on the TV and is handed a token.
      * Open to unpaired clients by design; still needs the anti-CSRF header. */
     if (starts(c->input, "POST /api/pair/")) {
@@ -1058,10 +1207,13 @@ static void dispatch(struct app *a, struct client *c) {
         a->lan_act = sync_lan(a, exists(LAN_ON), a->lan_code);
         message(a, a->auth.enabled ? "Phone control is on. Enter the code shown on the TV." : "Phone control is off.");
     } else if (starts(c->input, "POST /api/scan HTTP/1.")) {
-        if (a->streaming) { response(c, "409 Conflict", "text/plain", "Stop audio before scanning.", 27); return; }
-        /* One search at a time: each runs the radio the controller shares for 16 s,
-         * so a repeated request lets the running one finish instead of restarting it. */
-        if (!a->scanning && scan(a)) { response(c, "503 Service Unavailable", "text/plain", "Scan could not start", 20); return; }
+        /* Add Device: stop reconnecting, let go of the device, then search once
+         * the radio is free (begin_add). One search at a time: each runs the radio
+         * the controller shares for 16 s, so a repeat lets the running one finish. */
+        if (ensure_bt(a)) { response(c, "503 Service Unavailable", "text/plain", "Bluetooth is not ready.", 23); return; }
+        begin_add(a, c->loopback ? CONN_ADD_CONSOLE : CONN_ADD_PHONE);
+    } else if (starts(c->input, "POST /api/scan-done HTTP/1.")) {
+        end_add(a, "add: Add Device closed", 1);
     } else if (starts(c->input, "POST /api/select/")) {
         u64 mac = parse_mac(c->input + 17);
         refresh_devices(a);
@@ -1069,17 +1221,18 @@ static void dispatch(struct app *a, struct client *c) {
         if (!mac || !d || !bt_is_audio(d)) { response(c, "400 Bad Request", "text/plain", "Select a listed audio device.", 29); return; }
         struct bt_device chosen = *d;
         u64 old = a->target.address;
-        end_scan(a); stop_audio(a);
-        if (select_device(a, &chosen)) { response(c, "500 Internal Server Error", "text/plain", "Cannot save selection.", 22); return; }
-        if (old != mac) {
-            if (a->bt >= 0) sc3(SYS_ioctl, a->bt, BT_DROP_LINK, (long)&old);
-            a->own_link = 0; /* that was the old device's link */
+        end_add(a, "add: ended, a device was chosen", 0);
+        /* Already dialling this one: that attempt carries on. */
+        if (!(old == mac && a->wanted && a->page_at)) {
+            end_scan(a); stop_audio(a);
+            if (old != mac) release_link(a); /* the old device's link or dial: the new dial waits for it */
+            if (select_device(a, &chosen)) { response(c, "500 Internal Server Error", "text/plain", "Cannot save selection.", 22); return; }
+            a->wanted = 1; a->state = CONN_RECOVERING; a->next_try = 0;
+            a->dropped = a->give_up = a->announced = a->session = 0;
+            a->attempts = 0; a->relinks = 0; a->refused_since = 0;
+            sc3(SYS_unlink, (long)TV_ON, 0, 0); a->tv = 0;
+            say(a, "Connecting to ", "...");
         }
-        a->wanted = 1; a->state = CONN_RECOVERING; a->next_try = 0;
-        a->dropped = a->give_up = a->announced = a->session = 0;
-        a->attempts = 0; a->relinks = 0; a->refused_since = 0;
-        sc3(SYS_unlink, (long)TV_ON, 0, 0); a->tv = 0;
-        say(a, "Connecting to ", "...");
     } else if (starts(c->input, "POST /api/pin/")) {
         char pin[17];
         unsigned n = 0;
@@ -1104,16 +1257,20 @@ static void dispatch(struct app *a, struct client *c) {
         a->test_phase = 0; a->test_next = 0; a->test_until = a->clock() + 2000000; a->snap = 1;
         message(a, "Playing test tone.");
     } else if (starts(c->input, "POST /api/connect HTTP/1.")) {
+        end_add(a, "add: ended, connect", 0);
         a->wanted = 1; a->relinks = 0;
         sc3(SYS_unlink, (long)TV_ON, 0, 0); a->tv = 0;
-        if (!a->streaming) {
+        if (!a->streaming && !a->page_at) { /* a dial already running carries on */
             end_scan(a); a->state = CONN_RECOVERING; a->next_try = 0;
             a->dropped = a->give_up = a->announced = a->session = 0;
             a->attempts = 0;
             say(a, "Connecting to ", "...");
         }
     } else if (starts(c->input, "POST /api/stop HTTP/1.")) {
-        a->wanted = 0; end_scan(a); stop_audio(a); drop_link(a);
+        end_add(a, "add: ended, disconnect", 0);
+        /* release_link holds the radio for a dial it cancels: a search right after
+         * a Disconnect waits for that, too. */
+        a->wanted = 0; end_scan(a); stop_audio(a); release_link(a);
         a->state = CONN_IDLE; a->relinks = 0; a->refused_since = 0;
         closefd(a->bt); a->bt = -1;
         a->dropped = a->give_up = a->announced = a->session = 0;
@@ -1406,6 +1563,9 @@ void *bta_worker(void *arg) {
             stop_audio(&a);
             closefd(a.bt); a.bt = -1;
             a.own_link = 0; a.redial_at = 0; /* a link that outlived the sleep is not trusted: dial afresh */
+            /* No dial or search outlived it either; the radio rests before the next. */
+            a.page_at = 0; a.hold = CONN_HOLD_NONE; a.scanning = 0; a.scan_wait = 0;
+            a.radio_quiet_at = now + CONN_SCAN_QUIET_US;
             if (a.wanted) {
                 a.state = CONN_RECOVERING; a.dropped = a.give_up = 0; a.attempts = 0;
                 a.next_try = now + 2000000; /* let the console's own Bluetooth come back first */

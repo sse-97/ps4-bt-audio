@@ -352,8 +352,9 @@ int main(void){
   }else if(ctx.screen==SCREEN_SCAN){
    step(&ctx.focus,pressed,state.count);clamp_scan_focus();
    if(pressed&CONFIRM){if(state.count>0&&ctx.focus>=0&&ctx.focus<state.count){scan_addr=state.devices[ctx.focus].address;scan_connecting=1;logline("action: select (add)");select_index(ctx.focus);}}
-   if(pressed&ORBIS_PAD_BUTTON_TRIANGLE&&!state.scanning){logline("action: scan again");action("/api/scan");}
-   if(pressed&CANCEL)go_home(fixed_row(ROW_ADD));
+   if(pressed&ORBIS_PAD_BUTTON_TRIANGLE&&!state.scanning&&l!=LINK_CONNECTING){logline("action: scan again");action("/api/scan");}
+   /* Leaving tells the service, which then reconnects the device Add Device paused. */
+   if(pressed&CANCEL){logline("action: leave add");action("/api/scan-done");go_home(fixed_row(ROW_ADD));}
   }else if(ctx.screen==SCREEN_TEST){
    step(&ctx.focus,pressed,TEST_COUNT);
    if(pressed&CONFIRM){

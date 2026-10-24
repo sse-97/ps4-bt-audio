@@ -154,13 +154,44 @@ Tick each box. If anything fails, note the `message`, `state` and the relevant c
       switch between the game, the home screen and the app: the TV may sound for about a
       second after a switch, then stays silent.
 - [ ] **One search at a time.** On Add Device, Search Again shows only when no search is
-      running; pressing Triangle repeatedly doesn't restart it (`service.log`: one
-      `scan: started` per 16 s at most).
+      running or waiting and no device is connecting; pressing Triangle repeatedly
+      doesn't restart it (`service.log`: one `scan: started` per 16 s at most).
 - [ ] **PayLoader off.** With GoldHEN's PayLoader Server off and the service stopped, the
       Start dialog says to turn it on; after turning it on, **Start** brings the service up.
       Turning it off while the service runs changes nothing.
 - [ ] **Home-screen icon.** The app's tile is the white Bluetooth symbol on blue, like the
       system's own apps.
+
+## 9. Add Device never searches during a connection attempt
+
+On 13.52 a search started while the PS4 is still trying to reach a device that
+doesn't answer leaves Bluetooth stuck: the controller drops and won't come back,
+even by USB, until a full power-off (hold the power button until the second
+beep). Every check here must leave the controller connected.
+
+- [ ] **While connecting.** Speaker off, open the app (it starts "Connecting to …"),
+      press **Add Device** within 20 s. The screen shows Searching..., the controller
+      stays connected. `service.log`: `add: Add Device opened`, `add: reconnecting
+      stopped`, `radio: cancelling the dial`, then either `radio: dial cancelled after
+      N ms, the driver confirmed it` or `radio: waited N ms for the dial to end (no
+      confirmation)`, and only then `scan: started`. Note which of the two appears
+      and the `connect: link state` lines before it: they show whether the driver
+      reports a dial in progress.
+- [ ] **While playing.** With the speaker playing, press **Add Device**: TV sound
+      returns, the speaker disconnects, the search starts about a second later
+      (`link: dropped`, `radio: link down after N ms`, `scan: started`).
+- [ ] **Leaving reconnects.** Press Back on Add Device without choosing: the speaker
+      reconnects and plays (`add: Add Device closed`, then a dial).
+- [ ] **Choosing during a search.** Choose a device while Searching... shows: the
+      search stops and the dial follows about 2 s later (`connect: waiting for the
+      radio` may appear), never during the search.
+- [ ] **App put away.** Open Add Device, then switch to a game with the PS button:
+      within about 10 s the speaker reconnects (`add: ended, the app went away`).
+- [ ] **Phone search.** Press Scan on the phone page while the speaker plays: it
+      disconnects, the search runs, and a minute after it ends without a choice the
+      speaker reconnects (`add: ended, no device was chosen`).
+- [ ] **Search Again during a connect.** After choosing a device, Search Again is not
+      offered until it has connected or failed.
 
 ## Known limitations / not verifiable here
 
