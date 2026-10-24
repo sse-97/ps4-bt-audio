@@ -142,10 +142,13 @@ Tick each box. If anything fails, note the `message`, `state` and the relevant c
       close the game (the app is a mini app, CATEGORY `gde`). The app draws and reads the
       controller; `app.log` shows `Video memory: … alloc=0x0 map=0x0`. Closing it returns
       to the game.
-- [ ] **Stays open like a system app.** Back on Home does nothing. Leaving with the PS
-      button and coming back (from the home screen or the Quick Menu) shows the app as it
-      was, without starting it over; the button that brought it back does nothing in it.
-      `app.log` shows `focus:` lines for each switch.
+- [ ] **Stays open like a system app.** Back on Home goes to the home screen, like the
+      Internet Browser (`app.log`: `home: go to home screen rc=0x0`; a negative code
+      means the system refused, and the app says to use the PS button). Back on the
+      "isn't running" dialog does the same; only its Close button closes the app.
+      Leaving with Back or the PS button and coming back (from the home screen or the
+      Quick Menu) shows the app as it was, without starting it over; the button that
+      brought it back does nothing in it. `app.log` shows `focus:` lines for each switch.
 - [ ] **App is display-only.** Closing the app (Quick Menu > Close Application, or Close in
       the Start dialog) returns to the home screen without an error (no CE-34878-0), and
       leaves the service and audio running. If it does crash, `app.log`'s last `exit:`
