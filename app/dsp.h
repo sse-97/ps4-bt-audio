@@ -20,6 +20,16 @@ static unsigned bta_ring_available(u32 writepos, u32 readpos) {
     return writepos >= readpos ? writepos - readpos : 0xfff0 - readpos + writepos;
 }
 
+/* Advance a read cursor by `n` bytes, wrapping the [16, 0x10000) data region the
+ * same way bta_convert_capture does (0x10000 -> 16). Used to drop the oldest
+ * backlog bytes when the pacer trims. `n` must be a multiple of 8 so the cursor
+ * stays stereo-frame aligned. */
+static u32 bta_ring_advance(u32 cursor, u32 n) {
+    cursor += n;
+    while (cursor >= 0x10000) cursor -= 0xfff0;
+    return cursor;
+}
+
 /* Convert 384 float samples from the capture ring (starting at `cursor`, which
  * wraps to 16 at 0x10000) into 384 shorts, scaled by volume (0..100) and
  * clamped. NaNs become silence. *level and *peak track the running peak

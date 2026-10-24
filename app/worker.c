@@ -24,6 +24,7 @@
 #include "conn.h"
 #include "profiles.h"
 #include "timing.h"
+#include "pacing.h"
 int bta_apply_patch(void);
 
 /* FreeBSD syscall numbers used directly through sc3/sc5. */
@@ -85,10 +86,16 @@ struct app {
     int mode;            /* current SBC send mode: SBC_JOINT / SBC_DUAL */
     u8 modes_tried;      /* modes attempted this stream (for one-shot fallback) */
     int confirmed;       /* a packet was accepted this stream (record the mode once) */
+    /* Clock-paced sending (see pacing.h). latency_mode picks the backlog target;
+     * drops/underruns count trims and starved slots for the diagnostics. */
+    struct bta_pace pace;
+    int latency_mode;
+    u64 drops, underruns;
     u64 refused_since;
     u32 relinks, relinks_total;
     u64 stream_at, test_until, test_next;
     u32 test_phase;
+    int snap; /* on the next capture read, drop to the live write cursor */
     void *mutex;
     int (*mlock)(void **);
     int (*munlock)(void **);
@@ -375,6 +382,36 @@ static void load_volume(struct app *a) {
     closefd(fd);
     if (n == sizeof(value) && value <= 100) a->volume = (int)value;
 }
+/* Latency mode (BTA_LAT_*): the backlog the sender holds. Persisted so it
+ * survives a restart, like the volume. Default balanced (12 ms). */
+static void apply_latency(struct app *a, int mode) {
+    if (mode < BTA_LAT_LOW || mode > BTA_LAT_STABLE) mode = BTA_LAT_BALANCED;
+    u32 old_target = a->pace.target;
+    a->latency_mode = mode;
+    bta_pace_config(&a->pace, mode);
+    /* A deeper target needs a deeper cushion; the steady pacer only trims down,
+     * so re-enter prebuffering to grow it. Lowering the mode trims on the next
+     * send and needs no refill. */
+    if (a->pace.target > old_target) a->pace.filling = 1;
+}
+static int save_latency(struct app *a, int mode) {
+    if (mode < BTA_LAT_LOW || mode > BTA_LAT_STABLE) return -1;
+    unsigned value = (unsigned)mode;
+    if (put("/data/bta_audio/latency.tmp", &value, sizeof(value))) return -1;
+    if (sc3(SYS_rename, (long)"/data/bta_audio/latency.tmp", (long)"/data/bta_audio/latency.bin", 0) < 0) return -1;
+    apply_latency(a, mode);
+    return 0;
+}
+static void load_latency(struct app *a) {
+    unsigned value = BTA_LAT_BALANCED;
+    long fd = sc3(SYS_open, (long)"/data/bta_audio/latency.bin", 0, 0);
+    if (fd >= 0) {
+        long n = sc3(SYS_read, fd, (long)&value, sizeof(value));
+        closefd(fd);
+        if (n != sizeof(value)) value = BTA_LAT_BALANCED;
+    }
+    apply_latency(a, (int)value);
+}
 static void begin_connect(struct app *a) {
     a->patch_rc = bta_apply_patch();
     if (a->patch_rc) { fail(a, "Bluetooth setup failed. Check the diagnostic status."); return; }
@@ -427,7 +464,8 @@ static void start_audio(struct app *a) {
         return;
     }
     a->streaming = 1; a->state = CONN_STREAMING; a->refused_since = 0; a->errors = 0;
-    a->stream_at = a->clock(); a->test_until = 0; a->test_next = 0; a->test_phase = 0;
+    a->stream_at = a->clock(); a->test_until = 0; a->test_next = 0; a->test_phase = 0; a->snap = 0;
+    bta_pace_reset(&a->pace, a->stream_at); a->drops = 0; a->underruns = 0;
     int was_dropped = a->dropped, told = a->announced, fresh = !a->session;
     a->attempts = 0; a->give_up = 0; a->dropped = 0; a->announced = 0; a->session = 1;
     /* relinks persists across relink cycles (reset only when a packet is finally
@@ -521,10 +559,24 @@ static void audio_tick(struct app *a, u64 now) {
             restart_audio(a, "Audio stream changed. Reconnecting...");
             return;
         }
+        /* The test tone does not read the capture ring, so a long test laps it
+         * and leaves readpos stale. On the first capture read after one, drop to
+         * the live write cursor and prebuffer afresh instead of sending old or
+         * lapped audio. */
+        if (a->snap) { a->readpos = writepos; a->snap = 0; bta_pace_reset(&a->pace, now); }
         unsigned available = bta_ring_available(writepos, a->readpos);
-        if (available > 0xc000) { a->readpos = writepos; a->resyncs++; return; }
-        if (available < 1536) return;
-        backlog = available;
+        /* Clock-paced send with a bounded backlog (see pacing.h): prebuffer the
+         * target cushion, then one packet per ~4 ms, dropping the oldest bytes
+         * when the backlog runs ahead, instead of bursting and resyncing only at
+         * ~128 ms. WAIT also covers the prebuffer, so it is not an underrun. */
+        struct bta_pace_step step = bta_pace_run(&a->pace, now, available);
+        if (step.kind == BTA_PACE_WAIT) return;
+        if (step.kind == BTA_PACE_UNDERRUN) { a->underruns++; return; }
+        if (step.skip) {
+            a->readpos = bta_ring_advance(a->readpos, step.skip);
+            if (step.kind == BTA_PACE_RESYNC) a->resyncs++; else a->drops++;
+        }
+        backlog = available - step.skip; /* audio actually held and sent, after any trim */
         a->readpos = bta_convert_capture(a->ring, a->readpos, a->volume, pcm, &a->level, &peak);
     }
     struct audio_req req = {a->target.address, pcm, sizeof(pcm), (u32)conn_send_type(a->mode), 0};
@@ -619,6 +671,9 @@ static unsigned status(struct app *a, char *out, unsigned cap, int reveal) {
     field(&w, "joint", a->mode == SBC_JOINT);
     field(&w, "send_type", conn_send_type(a->mode));
     field(&w, "relinks", a->relinks_total);
+    field(&w, "latency_mode", a->latency_mode);
+    field(&w, "drops", a->drops);
+    field(&w, "underruns", a->underruns);
     field(&w, "refused_ms", a->refused_since ? (long)((now - a->refused_since) / 1000) : 0);
     field(&w, "hdmi_muted", a->muted == 1);
     field(&w, "scanning", a->scanning);
@@ -860,7 +915,7 @@ static void dispatch(struct app *a, struct client *c) {
         if (save_volume(a, (int)value)) { response(c, "500 Internal Server Error", "text/plain", "Cannot save volume.", 19); return; }
     } else if (starts(c->input, "POST /api/test HTTP/1.")) {
         if (!a->streaming || a->bt < 0 || a->btstate < 5 || a->btstate > 6) { response(c, "409 Conflict", "text/plain", "Connect headphones first.", 25); return; }
-        a->test_phase = 0; a->test_next = 0; a->test_until = a->clock() + 2000000;
+        a->test_phase = 0; a->test_next = 0; a->test_until = a->clock() + 2000000; a->snap = 1;
         message(a, "Playing test tone.");
     } else if (starts(c->input, "POST /api/connect HTTP/1.")) {
         a->wanted = 1; a->relinks = 0;
@@ -892,6 +947,11 @@ static void dispatch(struct app *a, struct client *c) {
         if (save_profiles(a)) { response(c, "500 Internal Server Error", "text/plain", "Cannot save preference.", 23); return; }
         a->mode = SBC_DUAL;
         message(a, "Joint stereo is off for these headphones.");
+    } else if (starts(c->input, "POST /api/latency/")) {
+        const char *p = c->input + 18;
+        if (p[0] < '0' || p[0] > '2' || !starts(p + 1, " HTTP/1.")) { response(c, "400 Bad Request", "text/plain", "Latency mode must be 0-2.", 25); return; }
+        if (save_latency(a, p[0] - '0')) { response(c, "500 Internal Server Error", "text/plain", "Cannot save latency mode.", 25); return; }
+        message(a, a->latency_mode == BTA_LAT_LOW ? "Latency mode: lowest." : a->latency_mode == BTA_LAT_STABLE ? "Latency mode: most stable." : "Latency mode: balanced.");
     } else if (starts(c->input, "POST /api/tv-on HTTP/1.")) {
         if (put(TV_ON, "on\n", 3)) { response(c, "500 Internal Server Error", "text/plain", "Cannot save preference.", 23); return; }
         a->tv = 1; mute(a, 0);
@@ -1039,6 +1099,7 @@ void *bta_worker(void *arg) {
     load_profiles(&a);
     init_target(&a);
     load_volume(&a);
+    load_latency(&a);
     a.tv = exists(TV_ON);
     sc3(SYS_unlink, (long)PAIR_CODE, 0, 0); /* a code never outlives the service session */
     { char code[BTA_CODE_DIGITS + 1]; /* phone control stays off unless the flag file is present */
