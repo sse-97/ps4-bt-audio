@@ -736,6 +736,7 @@ static unsigned status(struct app *a, char *out, unsigned cap, int reveal) {
         append(&w, ",\"name\":");
         quoted(&w, d->name);
         field(&w, "audio", !!(d->services & 8));
+        field(&w, "known", bta_profile_known(&a->profiles, d->address));
         append(&w, "}");
     }
     append(&w, "]}");

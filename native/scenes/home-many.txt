@@ -1,0 +1,20 @@
+# Home: only devices that played sound before are listed (the nearby ones that never
+# did appear only under Add Device); the list scrolls and the info line stays clear of it
+screen=0
+online=1
+link=0
+volume=40
+latency_mode=1
+dev=Neighbour TV|111111111111|1|0
+dev=Soundbar|222222222222|1|1
+dev=Car Stereo|333333333333|1|0
+dev=Portable Speaker|444444444444|1|1
+dev=Earbuds|555555555555|1|1
+dev=Kitchen Radio|666666666666|1|0
+dev=|777777777777|1|0
+dev=Headphones|888888888888|1|1
+dev=Spare Headset|999999999999|1|1
+focus=7
+top=0
+notice=Starting audio service...
+t=900

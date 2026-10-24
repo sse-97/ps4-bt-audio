@@ -95,7 +95,11 @@ static int refresh(void){
  if(!model_parse(body,&next)){online=0;return -1;}
  state=next;online=1;return 0;
 }
-static void set_notice(const char*s){snprintf(notice,sizeof(notice),"%s",s);notice_until=g_now+6000000;}
+static void notice_for(const char*s,uint64_t us){snprintf(notice,sizeof(notice),"%s",s);notice_until=g_now+us;}
+static void set_notice(const char*s){notice_for(s,6000000);}
+/* Why the service didn't start stays in the Start dialog until the next try or
+ * until the service answers (the main loop clears it then). */
+static void start_notice(const char*s){notice_for(s,600000000);}
 /* The audio service normally starts at boot (GoldHEN AutoRun). If it is not running
  * when the app opens, send the bundled payload to GoldHEN's local BinLoader (port 9090)
  * once. The payload's launcher refuses to start twice, and we only try while port 8097
@@ -105,16 +109,17 @@ static void start_service(void){
  if(online||launch_attempted)return;launch_attempted=1;
  static char payload[131072];
  int f=sceKernelOpen("/app0/assets/BTA-Audio.bin",0,0);
- if(f<0){logline("start: bundled payload not found");return;}
+ if(f<0){logline("start: bundled payload not found");start_notice("The audio service file is missing. Reinstall the app.");return;}
  size_t used=0;
  while(used<sizeof(payload)){long n=sceKernelRead(f,payload+used,sizeof(payload)-used);if(n<=0)break;used+=(size_t)n;}
  sceKernelClose(f);
- if(used<1024||used>=sizeof(payload)){logline("start: bundled payload size invalid");return;}
+ if(used<1024||used>=sizeof(payload)){logline("start: bundled payload size invalid");start_notice("The audio service file is damaged. Reinstall the app.");return;}
  int fd=local_socket(9090);
- if(fd<0){logline("start: BinLoader (9090) not reachable; enable it in GoldHEN and jailbreak again");return;}
+ if(fd<0){logline("start: PayLoader (9090) not reachable; turn it on in GoldHEN's Servers Settings");start_notice("Turn on GoldHEN's PayLoader Server, then press Start.");return;}
  int rc=write_all(fd,payload,used);close(fd);
  logline(rc?"start: send failed":"start: payload sent to BinLoader");
- if(!rc)set_notice("Starting audio service...");
+ if(rc)start_notice("Couldn't reach GoldHEN. Press Start to try again.");
+ else notice_for("Starting audio service...",30000000);
 }
 /* POST an action, then refresh. 200 clears the notice; an error shows the
  * service's plain-text reason (error bodies are text, success bodies are JSON). */
@@ -125,9 +130,10 @@ static void action(const char*path){
  else{for(int i=0;body[i];i++)if(body[i]=='\n'||body[i]=='\r')body[i]=0;set_notice(body[0]?body:"That didn't work.");}
  refresh();
 }
-static void select_focused(void){
- if(ctx.focus<0||ctx.focus>=state.count)return;
- char path[64];snprintf(path,sizeof(path),"/api/select/%012lX",state.devices[ctx.focus].address);action(path);
+/* Connect to state.devices[i]. */
+static void select_index(int i){
+ if(i<0||i>=state.count)return;
+ char path[64];snprintf(path,sizeof(path),"/api/select/%012lX",state.devices[i].address);action(path);
 }
 static void volume_change(int amount){
  if(!online)return;int value=state.volume+amount;if(value<0)value=0;if(value>100)value=100;
@@ -139,9 +145,11 @@ static void scroll_to(int visible){
  if(ctx.focus<ctx.top)ctx.top=ctx.focus;if(ctx.focus>=ctx.top+visible)ctx.top=ctx.focus-visible+1;if(ctx.top<0)ctx.top=0;
 }
 static void clamp_home_focus(void){
- int n=home_rows(),last=n-HOME_VISIBLE;if(ctx.focus<0)ctx.focus=0;if(ctx.focus>=n)ctx.focus=n-1;
+ int n=home_rows(&ctx),last=n-HOME_VISIBLE;if(ctx.focus<0)ctx.focus=0;if(ctx.focus>=n)ctx.focus=n-1;
  scroll_to(HOME_VISIBLE);if(last<0)last=0;if(ctx.top>last)ctx.top=last;
 }
+/* Home index of one of the fixed rows (ROW_*), below however many devices Home lists. */
+static int fixed_row(int row){return home_count(&ctx)+row;}
 static void clamp_scan_focus(void){
  int n=state.count;if(n<=0){ctx.focus=0;ctx.top=0;return;}
  if(ctx.focus<0)ctx.focus=0;if(ctx.focus>=n)ctx.focus=n-1;scroll_to(SCAN_VISIBLE);
@@ -149,8 +157,9 @@ static void clamp_scan_focus(void){
 static void go_home(int row){ctx.screen=SCREEN_HOME;ctx.menu=0;ctx.focus=row;clamp_home_focus();}
 /* Home row of the device the service has selected (the Add Device row if none). */
 static int selected_row(void){
- for(int i=0;i<state.count;i++)if(state.devices[i].address==state.selected)return i;
- return state.count+ROW_ADD;
+ int n=home_count(&ctx);
+ for(int k=0;k<n;k++)if(state.devices[home_dev(&ctx,k)].address==state.selected)return k;
+ return fixed_row(ROW_ADD);
 }
 static void step(int*value,unsigned pressed,int count){
  if(pressed&ORBIS_PAD_BUTTON_DOWN)(*value)++;if(pressed&ORBIS_PAD_BUTTON_UP)(*value)--;
@@ -185,6 +194,7 @@ int main(void){
  int enter=1;if(sceSystemServiceParamGetInt(ENTER_BUTTON_PARAM,&enter)<0)enter=1;ctx.confirm_circle=(enter==0);
  ctx.pin=pin_buf;
  sceSystemServiceHideSplashScreen();
+ g_now=sceKernelGetProcessTime();
  logline("Checking audio service");refresh();start_service();
  logline("Starting display loop");
  unsigned previous=0;int buffer=0,armed=0;long flip=0;uint64_t poll=0,repeat=0,first_draw=0,snap_cd=0;
@@ -195,15 +205,17 @@ int main(void){
   if(now>=poll){
    /* Keep focus on the same Home row across a refresh: the same device, or the
     * same fixed row when the device list above it grows or shrinks. */
-   int home=ctx.screen==SCREEN_HOME,on_device=home&&ctx.focus<state.count,fixed=ctx.focus-state.count;
-   unsigned long faddr=on_device?state.devices[ctx.focus].address:0;
+   int home=ctx.screen==SCREEN_HOME,nd=home_count(&ctx),on_device=home&&ctx.focus>=0&&ctx.focus<nd,fixed=ctx.focus-nd;
+   unsigned long faddr=on_device?state.devices[home_dev(&ctx,ctx.focus)].address:0;
    refresh();poll=now+(!online?2000000:(l==LINK_STREAMING?300000:500000));
    l=online?(state.link>=LINK_IDLE&&state.link<=LINK_SEARCHING?state.link:LINK_IDLE):LINK_OFFLINE;
-   if(on_device){for(int i=0;i<state.count;i++)if(state.devices[i].address==faddr){ctx.focus=i;break;}}
-   else if(home)ctx.focus=state.count+fixed;
+   if(on_device){int n=home_count(&ctx);for(int k=0;k<n;k++)if(state.devices[home_dev(&ctx,k)].address==faddr){ctx.focus=k;break;}}
+   else if(home)ctx.focus=fixed_row(fixed);
   }
-  /* The Start dialog opens on its Start button each time the service goes away. */
+  /* The Start dialog opens on its Start button each time the service goes away;
+   * once the service answers, the dialog's start message has done its job. */
   if(ctx.online&&!online)ctx.dialog_focus=0;
+  if(!ctx.online&&online)notice[0]=0;
   ctx.online=online;
   /* Keep the cursor valid even when the device list changes between polls. */
   if(ctx.screen==SCREEN_HOME)clamp_home_focus();
@@ -255,31 +267,31 @@ int main(void){
    if(pressed&(CANCEL|ORBIS_PAD_BUTTON_OPTIONS))ctx.menu=0;
   }else if(ctx.screen==SCREEN_SCAN){
    step(&ctx.focus,pressed,state.count);clamp_scan_focus();
-   if(pressed&CONFIRM){if(state.count>0&&ctx.focus>=0&&ctx.focus<state.count){scan_addr=state.devices[ctx.focus].address;scan_connecting=1;logline("action: select (add)");select_focused();}}
+   if(pressed&CONFIRM){if(state.count>0&&ctx.focus>=0&&ctx.focus<state.count){scan_addr=state.devices[ctx.focus].address;scan_connecting=1;logline("action: select (add)");select_index(ctx.focus);}}
    if(pressed&ORBIS_PAD_BUTTON_TRIANGLE){logline("action: scan again");action("/api/scan");}
-   if(pressed&CANCEL)go_home(state.count+ROW_ADD);
+   if(pressed&CANCEL)go_home(fixed_row(ROW_ADD));
   }else if(ctx.screen==SCREEN_TEST){
    step(&ctx.focus,pressed,TEST_COUNT);
    if(pressed&CONFIRM){
     if(ctx.focus==TEST_AGAIN){logline("action: test again");action("/api/test");}
-    else if(ctx.focus==TEST_DISCONNECT){logline("action: disconnect (add)");action("/api/stop");go_home(state.count+ROW_ADD);}
+    else if(ctx.focus==TEST_DISCONNECT){logline("action: disconnect (add)");action("/api/stop");go_home(fixed_row(ROW_ADD));}
     else go_home(selected_row());
    }
    if(pressed&CANCEL)go_home(selected_row());
   }else if(ctx.screen==SCREEN_LATENCY){
    step(&ctx.focus,pressed,3);
-   if(pressed&CONFIRM){char path[32];snprintf(path,sizeof(path),"/api/latency/%d",ctx.focus);logline("action: latency");action(path);go_home(state.count+ROW_LATENCY);}
-   if(pressed&CANCEL)go_home(state.count+ROW_LATENCY);
+   if(pressed&CONFIRM){char path[32];snprintf(path,sizeof(path),"/api/latency/%d",ctx.focus);logline("action: latency");action(path);go_home(fixed_row(ROW_LATENCY));}
+   if(pressed&CANCEL)go_home(fixed_row(ROW_LATENCY));
   }else{ /* SCREEN_HOME */
-   step(&ctx.focus,pressed,home_rows());clamp_home_focus();
-   int row=ctx.focus-state.count;
+   step(&ctx.focus,pressed,home_rows(&ctx));clamp_home_focus();
+   int row=ctx.focus-home_count(&ctx);
    if(row==ROW_VOLUME){if(pressed&ORBIS_PAD_BUTTON_LEFT)volume_change(-5);if(pressed&ORBIS_PAD_BUTTON_RIGHT)volume_change(5);}
    if(pressed&ORBIS_PAD_BUTTON_OPTIONS&&focus_is_active(&ctx)){ctx.menu=1;ctx.menu_focus=MENU_TEST;}
    if(pressed&CONFIRM){
     if(row<0){
      /* The connected device opens its Options menu; any other device connects. */
      if(focus_is_active(&ctx)){ctx.menu=1;ctx.menu_focus=MENU_TEST;}
-     else{logline("action: connect");select_focused();}
+     else{logline("action: connect");select_index(home_dev(&ctx,ctx.focus));}
     }else if(row==ROW_ADD){ctx.screen=SCREEN_SCAN;ctx.focus=0;ctx.top=0;logline("action: scan (add)");action("/api/scan");}
     else if(row==ROW_TV){logline("action: tv");action(state.tv?"/api/tv-off":"/api/tv-on");}
     else if(row==ROW_LATENCY){ctx.screen=SCREEN_LATENCY;ctx.focus=lat_mode();}
@@ -299,5 +311,14 @@ int main(void){
   for(int tries=0;tries<1000;tries++){OrbisVideoOutFlipStatus status;if(!sceVideoOutGetFlipStatus(video,&status)&&status.flipArg==flip)break;sceKernelUsleep(1000);}
   buffer^=1;flip++;
  }
- logline("Native app closed; audio service remains running");if(pad>=0)scePadClose(pad);sceVideoOutClose(video);return 0;
+ logline(online?"Native app closed; audio service remains running":"Native app closed");
+ if(pad>=0)scePadClose(pad);sceVideoOutClose(video);
+ /* Returning from main ends in a raw exit system call, which the app sandbox
+  * refuses with SIGSYS: the system then reports a crash (CE-34878-0). Ask the
+  * system to close the app instead, and give it time to do so. Should that call
+  * fail, fall back to returning, which still closes the app. */
+ int rc=sceSystemServiceLoadExec("exit",NULL);
+ char m[48];snprintf(m,sizeof(m),"exit: system close rc=0x%x",rc);logline(m);
+ if(rc>=0)for(int i=0;i<100;i++)sceKernelUsleep(100000);
+ return 0;
 }

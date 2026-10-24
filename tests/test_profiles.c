@@ -32,9 +32,15 @@ void test_profiles(void) {
     CHECK_EQ(bta_profile_find(&p, 0x999), -1);
     CHECK_EQ(bta_profile_mode(&p, airpods.address), SBC_JOINT);
     CHECK_EQ(bta_profile_mode(&p, 0x999), SBC_JOINT); /* default for unknown */
+    CHECK_EQ(bta_profile_known(&p, airpods.address), 0); /* selected, never played */
+    CHECK_EQ(bta_profile_known(&p, 0x999), 0);
+    struct bta_profiles tried = p;
+    bta_profile_record_fail(&tried, airpods.address);
+    CHECK_EQ(bta_profile_known(&tried, airpods.address), 0); /* a failed try still isn't */
 
     /* Touching again updates the name/class but keeps the slot and counts. */
     bta_profile_record_ok(&p, airpods.address, SBC_JOINT, 1000);
+    CHECK_EQ(bta_profile_known(&p, airpods.address), 1); /* played sound once */
     struct bt_device renamed = dev(0x1122334455, "S's AirPods");
     CHECK_EQ(bta_profile_touch(&p, &renamed), 0);
     CHECK_EQ(p.count, 1);

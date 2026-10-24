@@ -28,8 +28,8 @@ enum { ROW_ADD = 0, ROW_VOLUME, ROW_TV, ROW_LATENCY, ROW_PHONE, ROW_STOP, ROW_FI
 enum { MENU_TEST = 0, MENU_DISCONNECT, MENU_COUNT };
 enum { TEST_YES = 0, TEST_AGAIN, TEST_DISCONNECT, TEST_COUNT };
 enum { DLG_NONE = 0, DLG_STOP = 1 };
-#define HOME_VISIBLE 9   /* list rows that fit between the two rules */
-#define SCAN_VISIBLE 8   /* the scan list starts lower, under its status line */
+#define HOME_VISIBLE 8   /* list rows that fit above the info line and the bottom rule */
+#define SCAN_VISIBLE 7   /* the scan list starts lower, under its status line */
 
 /* Everything input-dependent the renderer needs, filled by main.c each frame
  * (and by the host harness from a scene file). State itself lives in `state`. */
@@ -293,14 +293,25 @@ static void dev_name(const struct ui_device*d,char*out,size_t cap){
  if(n==0){snprintf(out,cap,"Unnamed Device %04lX",d->address&0xffff);return;}
  if(n>=cap)n=cap-1;memcpy(out,src,n);out[n]=0;
 }
-static int home_rows(void){return state.count+ROW_FIXED;}
 /* True when device i is the one the service is linked or linking to. */
 static int dev_active(const struct ui_ctx*c,int i){
  int l=ui_link(c);
  return i>=0&&i<state.count&&state.devices[i].address==state.selected&&l!=LINK_IDLE&&l!=LINK_OFFLINE;
 }
+/* Home lists the devices that have played sound through the service before, plus
+ * the one it is linked or linking to; Add Device lists everything nearby. Home
+ * row k (k < home_count) shows state.devices[home_dev(k)]. */
+static int on_home(const struct ui_ctx*c,int i){return state.devices[i].known||dev_active(c,i);}
+static int home_count(const struct ui_ctx*c){int n=0;for(int i=0;i<state.count;i++)n+=on_home(c,i);return n;}
+static int home_dev(const struct ui_ctx*c,int k){
+ for(int i=0;i<state.count;i++)if(on_home(c,i)&&k--==0)return i;
+ return -1;
+}
+static int home_rows(const struct ui_ctx*c){return home_count(c)+ROW_FIXED;}
 /* The Options menu belongs to the connected device's row on Home. */
-static int focus_is_active(const struct ui_ctx*c){return c->screen==SCREEN_HOME&&dev_active(c,c->focus);}
+static int focus_is_active(const struct ui_ctx*c){
+ return c->screen==SCREEN_HOME&&c->focus>=0&&c->focus<home_count(c)&&dev_active(c,home_dev(c,c->focus));
+}
 
 /* ---- list rows ---- */
 #define LIST_X 288
@@ -335,8 +346,9 @@ static void device_row(const struct ui_ctx*c,int i,int y,int sel){
  else row_busy(y,l==LINK_LOST?"Reconnecting...":l==LINK_SEARCHING?"Searching...":"Connecting...");
 }
 static void home_row(const struct ui_ctx*c,int i,int y,int sel){
- if(i<state.count){device_row(c,i,y,sel);return;}
- int k=i-state.count,cx=LIST_X+42,cy=y+42;char buf[32];
+ int nd=home_count(c);
+ if(i<nd){device_row(c,home_dev(c,i),y,sel);return;}
+ int k=i-nd,cx=LIST_X+42,cy=y+42;char buf[32];
  row_frame(y,sel);
  if(k==ROW_ADD){disc_icon(I_PLUS,cx,cy);row_label(y,"Add Device",900);return;}
  disc_icon(I_WRENCH,cx,cy);
@@ -361,7 +373,7 @@ static void scrollbar(int y,int visible,int total,int top){
 
 /* ======================= screens ======================= */
 static void draw_home(const struct ui_ctx*c){
- int n=home_rows();
+ int n=home_rows(c);
  for(int r=0;r<HOME_VISIBLE&&c->top+r<n;r++)home_row(c,c->top+r,LIST_Y+r*ROW_H,c->focus==c->top+r);
  scrollbar(LIST_Y,HOME_VISIBLE,n,c->top);
 }

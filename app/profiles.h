@@ -97,6 +97,12 @@ static void bta_profile_record_fail(struct bta_profiles *p, u64 address) {
     int i = bta_profile_find(p, address);
     if (i >= 0) p->items[i].fail_count++;
 }
+/* A device that has played sound through the service before, not just one that
+ * was once selected: the home-screen app lists only these (status `known`). */
+static int bta_profile_known(const struct bta_profiles *p, u64 address) {
+    int i = bta_profile_find(p, address);
+    return i >= 0 && (p->items[i].ok_count > 0 || p->items[i].last_ok_us > 0);
+}
 /* The SBC mode to start a device in: its remembered working mode, or joint. */
 static int bta_profile_mode(const struct bta_profiles *p, u64 address) {
     int i = bta_profile_find(p, address);

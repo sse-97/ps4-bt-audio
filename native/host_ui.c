@@ -57,6 +57,9 @@ static void apply(const char *k, const char *v) {
         d->address = (unsigned long)strtoull(bar + 1, 0, 16);
         const char *bar2 = strchr(bar + 1, '|');
         d->audio = bar2 ? atoi(bar2 + 1) : 1;
+        /* dev=name|address|audio|known; a scene's devices are remembered unless it says 0 */
+        const char *bar3 = bar2 ? strchr(bar2 + 1, '|') : 0;
+        d->known = bar3 ? atoi(bar3 + 1) : 1;
         state.count++;
     }
 }

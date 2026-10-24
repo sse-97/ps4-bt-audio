@@ -39,6 +39,9 @@ Tick each box. If anything fails, note the `message`, `state` and the relevant c
 
 - [ ] **Add flow.** The Home list's **Add Device** opens **Searching...** with a live scan
       listing audio devices newest-first; Triangle searches again.
+- [ ] **Home lists your devices only.** Before the first connection Home shows no devices
+      (nearby TVs and car stereos appear only under **Add Device**); once a device has
+      played sound, it stays on Home.
 - [ ] **Connect.** Selecting a listed device connects it; `state` moves
       `discovering → connecting → configuring → streaming` and `link` reaches **2 (playing)**.
 - [ ] **Test tone.** The flow auto-plays a test tone on success and you hear it. The
@@ -120,7 +123,12 @@ Tick each box. If anything fails, note the `message`, `state` and the relevant c
 - [ ] **Theme and text.** The screens read clearly on the TV in the app's gray theme.
 - [ ] **Diagnostics.** The web Diagnostics panel and `/api/timing` show live packets, reconnects,
       resyncs, drops/underruns and late-packet counts.
-- [ ] **App is display-only.** Closing the app leaves the service and audio running.
+- [ ] **App is display-only.** Closing the app (Back on Home, or Close in the Start dialog)
+      returns to the home screen without an error (no CE-34878-0), and leaves the service
+      and audio running. If it does crash, `app.log`'s last `exit:` line has the result
+      code of the system's close request.
+- [ ] **PayLoader off.** With GoldHEN's PayLoader Server off and the service stopped, the
+      Start dialog says to turn it on; after turning it on, **Start** brings the service up.
 
 ## Known limitations / not verifiable here
 

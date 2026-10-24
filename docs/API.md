@@ -98,7 +98,7 @@ The important fields:
 | `drops`, `underruns` | Packets dropped and buffer underruns while streaming (choppy-audio signals). |
 | `volume`, `meter`, `level` | Headphone volume and output level. |
 | `tv_enabled`, `hdmi_muted` | TV-sound preference and current mute state. |
-| `name`, `selected`, `devices[]` | The chosen device and the listed audio devices. |
+| `name`, `selected`, `devices[]` | The chosen device and the listed audio devices. Each device has `address`, `name`, `audio` (1 if it advertises the audio service) and `known` (1 if it has played sound through the service before; the home-screen app lists only these on Home). |
 | `lan` | 1 if phone control is on. |
 | `pair_code` | The current six-digit code. **Only present for console-local callers**, never in a LAN response. |
 
