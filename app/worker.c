@@ -153,8 +153,8 @@ struct app {
     u32 log_len;
     u64 log_t0, log_size;
     u64 stats_at, stream_packets, stream_resyncs; /* audio summary every 10 min (log_stats) */
-    char http_last[96];  /* last failed-request line, so a retrying page logs it once a minute */
-    u64 http_at;
+    char http_seen[4][96]; /* recent request lines, so a retrying page logs each once per 10 min */
+    u64 http_at[4];
     u64 status_at;       /* next status.json write (every 10 s) */
 };
 
@@ -458,6 +458,7 @@ static void end_scan(struct app *a) {
 static int scan(struct app *a) {
     if (ensure_bt(a)) return -1;
     long rc = sc3(SYS_ioctl, a->bt, BT_SCAN_START, 0);
+    log_num(a, "scan: started, rc ", rc); /* the radio is busy for the next 16 s */
     if (rc < 0) return -1;
     a->scanning = 1; a->scan_end = a->clock() + 16000000; a->list_at = 0;
     return 0;
@@ -1058,7 +1059,9 @@ static void dispatch(struct app *a, struct client *c) {
         message(a, a->auth.enabled ? "Phone control is on. Enter the code shown on the TV." : "Phone control is off.");
     } else if (starts(c->input, "POST /api/scan HTTP/1.")) {
         if (a->streaming) { response(c, "409 Conflict", "text/plain", "Stop audio before scanning.", 27); return; }
-        if (scan(a)) { response(c, "503 Service Unavailable", "text/plain", "Scan could not start", 20); return; }
+        /* One search at a time: each runs the radio the controller shares for 16 s,
+         * so a repeated request lets the running one finish instead of restarting it. */
+        if (!a->scanning && scan(a)) { response(c, "503 Service Unavailable", "text/plain", "Scan could not start", 20); return; }
     } else if (starts(c->input, "POST /api/select/")) {
         u64 mac = parse_mac(c->input + 17);
         refresh_devices(a);
@@ -1157,8 +1160,9 @@ static void dispatch(struct app *a, struct client *c) {
 /* Log one line per notable request, never the routine polls (the app asks for the
  * status twice a second): failures, pairings, and https:// attempts the plain-HTTP
  * server can't answer. A path that carries a secret (the pairing code, a PIN) is
- * cut before it, and the same line again within a minute is skipped, so a page
- * that keeps retrying can't fill the log. Called with the lock held. */
+ * cut before it. Each of the last four distinct lines is logged at most once per
+ * 10 minutes (a forgotten phone tab polling the status, a button pressed again and
+ * again), so retries can't fill the log. Called with the lock held. */
 static void log_request(struct app *a, struct client *c, const char *what) {
     char line[96], req[48];
     struct writer w = {line, 0, sizeof(line)};
@@ -1183,9 +1187,17 @@ static void log_request(struct app *a, struct client *c, const char *what) {
     }
     append(&w, c->loopback ? " (console)" : " (network)");
     u64 now = a->clock();
-    if (equal(line, a->http_last) && now - a->http_at < 60000000) return;
-    memcpy(a->http_last, line, w.used + 1);
-    a->http_at = now;
+    int slot = 0;
+    for (int i = 0; i < 4; i++) {
+        if (equal(line, a->http_seen[i])) {
+            if (now - a->http_at[i] < 600000000) return;
+            slot = i;
+            break;
+        }
+        if (a->http_at[i] < a->http_at[slot]) slot = i; /* else reuse the oldest */
+    }
+    memcpy(a->http_seen[slot], line, w.used + 1);
+    a->http_at[slot] = now;
     log_text(a, line);
 }
 /* Rest mode aborts every socket. The aborted listener still completes a connection
@@ -1431,6 +1443,11 @@ void *bta_worker(void *arg) {
              * never lands in it. */
             if (now >= a.status_at) { n = status(&a, json, sizeof(json), 0); a.status_at = now + 10000000; }
             if (a.streaming && now >= a.stats_at) { log_stats(&a, "audio: "); a.stats_at = now + 600000000; }
+            /* The PS4 sets HDMI up again, which clears its mute, whenever a game or the
+             * home screen comes to the front (KLog: "Hdmi Setup" on each switch), and
+             * mute() only acts on a change it knows about. Put the mute back each
+             * second while it should hold. */
+            if (a.streaming && a.muted == 1 && a.hdmi >= 0) { int v = 1; a.hdmi_rc = sc3(SYS_ioctl, a.hdmi, HDMI_SET_MUTE, (long)&v); }
             a.level = 0; a.heartbeat = now + 1000000; logn = take_log(&a, logbuf);
         }
         unlock_state(&a);

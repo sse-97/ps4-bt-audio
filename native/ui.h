@@ -490,10 +490,10 @@ static void glyph(int kind,int cx,int cy,int circle_confirms){
  else if((kind==HINT_ENTER)!=(circle_confirms!=0))icon_c(I_GX,cx,cy,GLYPH_X,255);
  else icon_c(I_GO,cx,cy,GLYPH_O,255);
 }
-static void legend(const struct ui_ctx*c,int linew,int search,int options){
+static void legend(const struct ui_ctx*c,int linew,int back,int search,int options){
  static const char*LABELS[4]={"Enter","Back","Search Again","Options Menu"};
  int kinds[4],n=0,x=106;
- kinds[n++]=HINT_ENTER;kinds[n++]=HINT_BACK;
+ kinds[n++]=HINT_ENTER;if(back)kinds[n++]=HINT_BACK;
  if(search)kinds[n++]=HINT_TRIANGLE;
  if(options)kinds[n++]=HINT_OPTIONS;
  fill_a(0,943,linew,2,WHITE,128);
@@ -537,5 +537,7 @@ static void draw(const struct ui_ctx*c){
  else if(noticing)text_c(F_SMALL,960,905,notice,WHITE,1600);
  else if(sc==SCREEN_HOME&&ui_link(c)==LINK_FAILED&&state.message[0])text_c(F_SMALL,960,905,state.message,WHITE,1600);
  if(c->pinmode)draw_pin(c);
- legend(c,menu&&!modal?1440:WIDTH,sc==SCREEN_SCAN&&!modal,!modal&&(menu||focus_is_active(c)));
+ /* Back on Home does nothing (the app stays open; the PS button leaves it), so it isn't offered there. */
+ int show_back=modal||menu||sc!=SCREEN_HOME;
+ legend(c,menu&&!modal?1440:WIDTH,show_back,sc==SCREEN_SCAN&&!modal&&!state.scanning,!modal&&(menu||focus_is_active(c)));
 }

@@ -142,10 +142,20 @@ Tick each box. If anything fails, note the `message`, `state` and the relevant c
       close the game (the app is a mini app, CATEGORY `gde`). The app draws and reads the
       controller; `app.log` shows `Video memory: … alloc=0x0 map=0x0`. Closing it returns
       to the game.
-- [ ] **App is display-only.** Closing the app (Back on Home, or Close in the Start dialog)
-      returns to the home screen without an error (no CE-34878-0), and leaves the service
-      and audio running. If it does crash, `app.log`'s last `exit:` line has the result
-      code of the system's close request.
+- [ ] **Stays open like a system app.** Back on Home does nothing. Leaving with the PS
+      button and coming back (from the home screen or the Quick Menu) shows the app as it
+      was, without starting it over; the button that brought it back does nothing in it.
+      `app.log` shows `focus:` lines for each switch.
+- [ ] **App is display-only.** Closing the app (Quick Menu > Close Application, or Close in
+      the Start dialog) returns to the home screen without an error (no CE-34878-0), and
+      leaves the service and audio running. If it does crash, `app.log`'s last `exit:`
+      line has the result code of the system's close request.
+- [ ] **TV stays muted across switches.** With Keep TV Sound On off and audio playing,
+      switch between the game, the home screen and the app: the TV may sound for about a
+      second after a switch, then stays silent.
+- [ ] **One search at a time.** On Add Device, Search Again shows only when no search is
+      running; pressing Triangle repeatedly doesn't restart it (`service.log`: one
+      `scan: started` per 16 s at most).
 - [ ] **PayLoader off.** With GoldHEN's PayLoader Server off and the service stopped, the
       Start dialog says to turn it on; after turning it on, **Start** brings the service up.
       Turning it off while the service runs changes nothing.

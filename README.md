@@ -119,11 +119,14 @@ also start after every jailbreak without opening the app, add the AutoRun entry 
    Device**), then **Add Device**, **Volume** (left/right to change it), **Keep TV Sound On**,
    **Audio Latency**, **Allow Phone Control** and **Stop Audio Service**. The confirm
    button connects the focused device; on the connected one it opens the Options menu
-   (**Test Sound**, **Disconnect**), as does the Options button. The cancel button
-   closes the app. Confirm and cancel follow the console's enter-button setting (Cross
-   in most regions, Circle in Japan). If the service isn't running, the app offers to
-   start it. The audio service keeps running after you close the app; **Stop Audio
-   Service** ends it and disconnects the device.
+   (**Test Sound**, **Disconnect**), as does the Options button. The cancel button goes
+   back from sub-screens and menus. Confirm and cancel follow the console's enter-button
+   setting (Cross in most regions, Circle in Japan). The app is a mini app like the
+   system's own: it opens next to a running game without closing it, stays open when you
+   leave it with the PS button, and closes from the Quick Menu (**Close Application**).
+   If the service isn't running, the app offers to start it. The audio service keeps
+   running after you close the app; **Stop Audio Service** ends it and disconnects the
+   device.
 4. If the service still doesn't start, check `/data/bta_audio/app.log` on the console, or send the
    payload yourself with Option B below. For connection problems, `/data/bta_audio/service.log`
    lists what the service did, step by step.
