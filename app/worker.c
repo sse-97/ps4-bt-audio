@@ -42,6 +42,7 @@ int bta_apply_patch(void);
 #define SYS_socket  97
 #define SYS_connect 98
 #define SYS_setsockopt 105
+#define SYS_gettimeofday 116
 #define SYS_rename  128
 #define SYS_mkdir   136
 
@@ -125,6 +126,9 @@ struct app {
     struct bta_profiles profiles;
     int profile_dirty;   /* profiles changed in memory, persist on the next beat */
     u64 last_tick;       /* worker-loop time, for rest-mode resume detection */
+    u64 last_wall;       /* wall-clock time of that tick (see conn_slept) */
+    u64 listen_at;       /* earliest next re-open of the listening socket */
+    u32 accept_errs;     /* accept failures in a row (a broken listener) */
     struct bt_devices devices;
     int scanning, pin_pending;
     u64 scan_end, list_at;
@@ -1108,14 +1112,43 @@ static void dispatch(struct app *a, struct client *c) {
     unsigned n = status(a, body, sizeof(body), c->loopback);
     response(c, "200 OK", "application/json", body, n);
 }
+/* Wall-clock microseconds (0 if unavailable): unlike the process clock (a->clock),
+ * it runs on while the console is in rest mode. */
+static u64 wall_us(void) {
+    struct { long sec, usec; } tv = {0, 0};
+    if (sc3(SYS_gettimeofday, (long)&tv, 0, 0) < 0 || tv.sec <= 0) return 0;
+    return (u64)tv.sec * 1000000 + (u64)tv.usec;
+}
+/* Rest mode aborts every socket. The aborted listener still completes a connection
+ * and then resets it, so the app and the phone see the service as gone while audio
+ * plays on. Open a fresh one (at most every 2 s) and drop the client connections,
+ * which are dead too. `why` is the accept error, or 0 after a wake or a retry. */
+static void reopen_listener(struct app *a, u64 now, long why) {
+    for (int i = 0; i < 4; i++) { closefd(a->clients[i].fd); a->clients[i].fd = -1; }
+    closefd(a->listener);
+    a->listener = bta_listen();
+    a->listen_at = now + 2000000;
+    a->accept_errs = 0;
+    lock_state(a);
+    log_num(a, a->listener >= 0 ? "http: listening again; cause " : "http: port 8097 still busy; cause ", why);
+    unlock_state(a);
+}
 static void network_tick(struct app *a, u64 now) {
+    if (a->listener < 0 && now >= a->listen_at) reopen_listener(a, now, 0);
     for (int i = 0; i < 4; i++) {
         struct client *c = &a->clients[i];
         if (c->fd < 0) {
+            if (a->listener < 0) continue;
             struct sockaddr4 peer;
             u32 len = sizeof(peer);
             long fd = sc3(SYS_accept, a->listener, (long)&peer, (long)&len);
-            if (fd < 0) continue;
+            if (fd < 0) {
+                /* -35: nobody is waiting. Other errors in a row mean the listening
+                 * socket itself is broken. */
+                if (fd != -35 && ++a->accept_errs >= 3 && now >= a->listen_at) reopen_listener(a, now, fd);
+                continue;
+            }
+            a->accept_errs = 0;
             if (len != 16 || !local_ip((u8 *)&peer.addr) || nonblock(fd) < 0) { closefd(fd); continue; }
             int one = 1;
             sc5(SYS_setsockopt, fd, 0xffff, 0x800, (long)&one, 4);
@@ -1264,27 +1297,34 @@ void *bta_worker(void *arg) {
     init_lock(&a);
     start_sender(&a);
     while (!a.quit) {
-        u64 now = a.clock();
-        /* Rest-mode resume: a long gap between loop iterations means the console
-         * slept and woke, so the driver handle and the in-RAM firmware patch may
-         * be stale. Tear down and let the normal connect path (which re-applies
-         * the patch and reopens /dev/bt) reconnect from scratch. Skip it when
-         * audio is actually still flowing (a recently accepted packet): then the
+        u64 now = a.clock(), wall = wall_us();
+        /* Rest-mode resume (see conn_slept): the driver handle, the in-RAM firmware
+         * patch and the sockets may be stale. Tear down, drop any half-done connect
+         * (it may have started as the console went to sleep), reopen the listener
+         * and let the normal connect path (which re-applies the patch and reopens
+         * /dev/bt) reconnect from scratch. The process-clock check alone skips the
+         * case where audio is still flowing (a recently accepted packet): then the
          * gap was only this normal-priority worker thread being starved while the
          * real-time sender kept streaming, not a real suspend. */
-        if (conn_resumed(a.last_tick, now, CONN_RESUME_GAP_US) &&
-            !(a.streaming && now >= a.ok_at && now - a.ok_at < CONN_RESUME_GAP_US)) {
+        u64 slept = a.last_wall && wall > a.last_wall ? wall - a.last_wall : 0;
+        if (conn_slept(now - a.last_tick, slept, CONN_RESUME_GAP_US) ||
+            (conn_resumed(a.last_tick, now, CONN_RESUME_GAP_US) &&
+             !(a.streaming && now >= a.ok_at && now - a.ok_at < CONN_RESUME_GAP_US))) {
             lock_state(&a);
+            log_num(&a, "wake: seconds asleep ", (long)(slept / 1000000));
             stop_audio(&a);
             closefd(a.bt); a.bt = -1;
-            a.own_link = 0; /* a link that outlived the sleep is not trusted: dial afresh */
+            a.own_link = 0; a.redial_at = 0; /* a link that outlived the sleep is not trusted: dial afresh */
             if (a.wanted) {
-                a.state = CONN_RECOVERING; a.dropped = a.give_up = 0; a.attempts = 0; a.next_try = now;
+                a.state = CONN_RECOVERING; a.dropped = a.give_up = 0; a.attempts = 0;
+                a.next_try = now + 2000000; /* let the console's own Bluetooth come back first */
                 message(&a, "Woke from rest mode. Reconnecting...");
             } else a.state = CONN_IDLE;
             unlock_state(&a);
+            reopen_listener(&a, now, 0);
         }
         a.last_tick = now;
+        a.last_wall = wall;
         if (now >= a.net_at) { network_tick(&a, now); a.net_at = now + 4000; } /* locks around each request */
         if (a.quit) break;
         char json[12000], logbuf[sizeof(a.log)];

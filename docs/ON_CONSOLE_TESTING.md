@@ -90,12 +90,17 @@ Tick each box. If anything fails, note the `message`, `state` and the relevant c
 
 ## 6. Rest mode
 
-- [ ] **Sleep/wake resume.** Put the console into rest mode while streaming, then wake it. The
-      service re-opens the driver, re-applies the acceptance patch and reconnects on its own
-      (message "Woke from rest mode. Reconnecting..."), reaching `streaming` again.
-  > Note: rest-mode resume assumes the process clock keeps counting across suspend. If it does
-  > not on 13.52, the watchdog is a harmless no-op and recovery falls back to the
-  > stream-failure path (slower but still works). This check confirms which happens.
+- [ ] **Sleep/wake resume.** Put the console into rest mode while streaming (a game running is
+      fine), then wake it. The service re-opens the driver, re-applies the acceptance patch
+      and reconnects on its own, reaching `streaming` again within about 20 s of the home
+      screen returning. `service.log` shows `wake: seconds asleep …` and "Woke from rest
+      mode. Reconnecting...".
+- [ ] **App and phone after waking.** Right after waking, the app opens on Home (not the
+      "isn't running" dialog) and the phone page loads: the service reopened its listening
+      socket (`http: listening again` in `service.log`).
+  > Note: on 13.52 the process clock stops in rest mode (measured: a 30 s connect timeout
+  > spanned 12 minutes of sleep), and rest mode aborts the service's sockets. The service
+  > therefore detects the wake by comparing it with the wall clock.
 
 ## 7. Phone control and security
 
