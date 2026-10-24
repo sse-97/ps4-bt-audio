@@ -76,6 +76,7 @@ client may reach without a token.
 | `POST /api/pin/<digits>` | Submit a pairing PIN for a headset that asks for one. |
 | `POST /api/tv-on`, `/api/tv-off` | Keep or mute TV sound while streaming. |
 | `POST /api/joint-on`, `/api/joint-off` | Joint-stereo SBC on/off for this device. |
+| `POST /api/latency/<0-2>` | Set the latency mode: 0 lowest, 1 balanced, 2 most stable. |
 | `POST /api/lan-on`, `/api/lan-off` | Turn phone control on/off (console only). |
 | `POST /api/quit` | Stop the service and restore TV sound. |
 
@@ -91,7 +92,11 @@ The important fields:
 | `version` | Release version string. |
 | `message` | Human-readable status line. |
 | `link` | Truthful link state: 0 idle, 1 connecting, 2 playing, 3 lost, 4 failed, 5 searching. |
+| `state` | Connection state-machine name: `idle`, `discovering`, `connecting`, `pairing`, `configuring`, `streaming`, `recovering`. |
+| `attempts`, `retry_ms` | Connection attempt count and milliseconds until the next retry. |
 | `streaming`, `wanted`, `scanning`, `pin_pending` | Service flags. |
+| `latency_mode` | Buffering mode: 0 lowest, 1 balanced, 2 most stable. |
+| `drops`, `underruns` | Packets dropped and buffer underruns while streaming (choppy-audio signals). |
 | `volume`, `meter`, `level` | Headphone volume and output level. |
 | `tv_enabled`, `hdmi_muted` | TV-sound preference and current mute state. |
 | `name`, `selected`, `devices[]` | The chosen device and the listed audio devices. |
