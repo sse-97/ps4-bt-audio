@@ -27,6 +27,7 @@ PKGDIR := $(NATIVE)/package
 DIST  := $(BUILD)/dist
 
 PAYLOAD := $(BUILD)/BTA-Audio.bin
+PROBE   := $(BUILD)/BTA-Probe.bin
 PKG     := $(BUILD)/Bluetooth-Audio-$(VERSION).pkg
 
 PAYLOAD_FLAGS := --target=x86_64-pc-freebsd12-elf -O2 -fPIE -ffreestanding -fno-builtin \
@@ -34,9 +35,10 @@ PAYLOAD_FLAGS := --target=x86_64-pc-freebsd12-elf -O2 -fPIE -ffreestanding -fno-
 	-Wall -Wextra -Werror -I $(OBJ)
 APP_HEADERS := $(wildcard app/*.h)
 
-.PHONY: all payload pkg dist clean host-ui test
+.PHONY: all payload probe pkg dist clean host-ui test
 all: payload pkg
 payload: $(PAYLOAD)
+probe: $(PROBE)
 pkg: $(PKG)
 
 $(OBJ) $(NATIVE) $(DIST) $(BUILD):
@@ -62,6 +64,14 @@ $(OBJ)/BTA-Audio.debug.elf: $(PAYLOAD_OBJS) app/payload.ld
 
 $(PAYLOAD): $(PAYLOAD_OBJS) app/payload.ld $(OBJ)/BTA-Audio.debug.elf
 	$(LLD) --oformat=binary -T app/payload.ld $(PAYLOAD_OBJS) -o $@
+
+# Read-only firmware probe: its own standalone payload (_start at offset 0). Same
+# flags as the accept patch, which also uses rdmsr and so forbids SSE registers.
+$(OBJ)/fw_probe.o: probe/fw_probe.c $(APP_HEADERS) | $(OBJ)
+	$(CLANG) $(PAYLOAD_FLAGS) -mgeneral-regs-only -c $< -o $@
+
+$(PROBE): $(OBJ)/fw_probe.o app/payload.ld
+	$(LLD) --oformat=binary -T app/payload.ld $(OBJ)/fw_probe.o -o $@
 
 # --- Home-screen app (OpenOrbis) -------------------------------------------------
 
@@ -119,10 +129,11 @@ $(PKG): $(NATIVE)/BluetoothAudio.elf $(NATIVE)/icon0.png $(PAYLOAD) VERSION
 
 # --- Release files ----------------------------------------------------------------
 
-dist: $(PAYLOAD) $(PKG) | $(DIST)
+dist: $(PAYLOAD) $(PROBE) $(PKG) | $(DIST)
 	cp $(PAYLOAD) $(DIST)/BTA-Audio-$(VERSION).bin
+	cp $(PROBE) $(DIST)/BTA-Probe-$(VERSION).bin
 	cp $(PKG) $(DIST)/Bluetooth-Audio-$(VERSION).pkg
-	cd $(DIST) && sha256sum BTA-Audio-$(VERSION).bin Bluetooth-Audio-$(VERSION).pkg > SHA256SUMS
+	cd $(DIST) && sha256sum BTA-Audio-$(VERSION).bin BTA-Probe-$(VERSION).bin Bluetooth-Audio-$(VERSION).pkg > SHA256SUMS
 	cat $(DIST)/SHA256SUMS
 
 clean:
