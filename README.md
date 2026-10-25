@@ -210,8 +210,13 @@ scripts/docker-build.sh payload    # only build/BTA-Audio.bin
 The image (`docker/Dockerfile`) pins Ubuntu 24.04 with clang/lld 18.1.3, the
 [OpenOrbis toolchain](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain) (v0.5.4),
 OpenSSL 1.1 for PkgTool and exact Python package versions for the asset generator; with
-that toolchain `make dist` reproduces the payload and PKG byte for byte, and every
-release publishes the resulting `SHA256SUMS`. Without Docker, run `make` directly: the
+that toolchain `make dist` reproduces **the payload** byte for byte. The PKG does not
+reproduce: PkgTool writes per-build metadata, so two builds of identical source give
+PKGs that differ in their header, entry and digest tables while the content itself is
+identical (measured between two 3.0.0 builds: 1733 bytes, all inside the first 1.1 MB,
+nothing beyond `0x110b60`). Every release publishes its `SHA256SUMS`, so use it to
+verify a download against that release; only the payload line also reproduces from
+source. Without Docker, run `make` directly: the
 payload needs only `clang` and `ld.lld`, the PKG also `OO_PS4_TOOLCHAIN`, Python with
 Pillow and matplotlib, and `libssl1.1`.
 
