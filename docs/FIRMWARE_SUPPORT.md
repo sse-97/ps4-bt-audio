@@ -126,6 +126,14 @@ now runs these signatures against a live kernel (checklist item 6) and reports w
 each resolves, so the candidates can be confirmed on hardware without patching
 anything.
 
+**Confirmed on 13.52 hardware (2026-10-25):** a probe run resolved all six
+signatures to exactly their `firmware.h` offsets, each a single match. (It was done
+on a freshly-booted kernel: with the service running and the accept patch applied,
+`patch_site` instead reads `NOT FOUND`, because its bytes are the patched form, so
+the self-check doubles as a check that the patch is live.) On 13.52 the search is
+therefore **Validated**, not just a candidate; the masks stay a one-firmware
+hypothesis for any *other* firmware until that firmware's bytes confirm them.
+
 ## Per-firmware research checklist
 
 For each firmware we want to add (all read-only until the final step):
