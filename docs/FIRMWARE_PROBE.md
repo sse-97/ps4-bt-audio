@@ -43,4 +43,4 @@ any payload sender). Then copy the results back over FTP (port 2121):
   whether that firmware can be worked on next.
 
 Once signatures exist, a later build will search for them at startup and refuse
-cleanly when any is missing, so an unknown firmware is never patched blind.
+cleanly when any is missing, so an unknown firmware is never patched blind. See [FIRMWARE_SUPPORT.md](FIRMWARE_SUPPORT.md) for the full plan and the per-firmware checklist.
