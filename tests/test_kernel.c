@@ -56,6 +56,19 @@ static void patch_kernel(unsigned char *k) {
     place(k, bta_kernel_sigs[BTA_SIG_PATCHED].known_offset, &bta_kernel_sigs[BTA_SIG_PATCHED].sig);
 }
 
+/* The resolve tests deliberately leave base 0, so a resolved address equals its known
+ * 13.52 offset and the expectations stay readable. bta_kernel_format reads base only
+ * to choose between "base ok" and "base not recovered", so lend it a real-looking one
+ * for the report. The no-base case below calls bta_kernel_format directly. */
+#define KBASE 0xffff800000000000UL
+static unsigned report_line(struct bta_kernel *k, char *out, unsigned cap) {
+    u64 saved = k->base;
+    if (!k->base) k->base = KBASE;
+    unsigned n = bta_kernel_format(k, out, cap);
+    k->base = saved;
+    return n;
+}
+
 void test_kernel(void) {
     unsigned char buf[256];
 
@@ -152,7 +165,7 @@ void test_kernel(void) {
             CHECK_EQ(kern.caps, BTA_KCAP_PATCH | BTA_KCAP_DEVLIST | BTA_KCAP_WIDEN);
 
             char line[160];
-            unsigned n = bta_kernel_format(&kern, line, sizeof(line));
+            unsigned n = report_line(&kern, line, sizeof(line));
             CHECK(n == strlen(line));
             CHECK(strstr(line, "base ok") != 0);
             CHECK(strstr(line, "6/6 signatures") != 0);
@@ -241,7 +254,7 @@ void test_kernel(void) {
             CHECK_EQ(kern.caps & BTA_KCAP_PATCH, 0u);
             CHECK(kern.caps & BTA_KCAP_DEVLIST);
             char line[160];
-            bta_kernel_format(&kern, line, sizeof(line));
+            report_line(&kern, line, sizeof(line));
             CHECK(strstr(line, "5/6 signatures") != 0);
             CHECK(strstr(line, "patch_site ambiguous") != 0);
             CHECK(strstr(line, "devlist+widen") != 0);
@@ -266,7 +279,7 @@ void test_kernel(void) {
             CHECK_EQ(kern.cache_stride, 0);
             CHECK_EQ(kern.caps, BTA_KCAP_PATCH);          /* patch only */
             char line[160];
-            bta_kernel_format(&kern, line, sizeof(line));
+            report_line(&kern, line, sizeof(line));
             CHECK(strstr(line, "base ok") != 0);
             CHECK(strstr(line, "6/6 signatures") != 0);
             CHECK(strstr(line, "fw 0x09000001") != 0);
@@ -295,7 +308,7 @@ void test_kernel(void) {
             CHECK_EQ(kern.patch_live, (long)by_name("patch_site")->known_offset);
             CHECK_EQ(kern.caps, BTA_KCAP_PATCH);          /* still usable: that is the point */
             char line[160];
-            bta_kernel_format(&kern, line, sizeof(line));
+            report_line(&kern, line, sizeof(line));
             CHECK(strstr(line, "patch_site already patched") != 0);
             CHECK(strstr(line, "not found") == 0);        /* never reported as missing */
             CHECK(strstr(line, "patch only") != 0);
