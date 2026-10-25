@@ -36,4 +36,5 @@ void test_profiles(void);
 void test_timing(void);
 void test_pacing(void);
 void test_qr(void);
+void test_sigscan(void);
 #endif

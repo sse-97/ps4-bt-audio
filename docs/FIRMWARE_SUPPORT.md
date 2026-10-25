@@ -91,6 +91,40 @@ Only the launch unit on 13.52 has given us real bytes so far (the probe's
 to *trust* them elsewhere. This is the honest reason the project does not simply
 ship guessed patterns.
 
+## What is implemented
+
+The "find the routines, don't hardcode them" mechanism now exists in code, and is
+covered by the host tests (`make test`):
+
+- [`app/sigscan.h`](../app/sigscan.h) — the masked matcher. It scans a buffer for
+  one signature and returns the single match, *no match*, or *ambiguous* (more than
+  one). A caller that locates a routine this way refuses on anything but a single
+  hit, so the all-or-nothing invariant above holds by construction.
+- [`app/fw_signatures.h`](../app/fw_signatures.h) — candidate signatures for six of
+  the nine routines, cut from the 13.520.001 capture and verified to match it
+  uniquely: `copyout`, `bt_lock`, `bt_unlock`, the command dispatcher (which is also
+  the second fingerprinted prologue, so six signatures cover seven offsets), the
+  acceptance patch site, and the cache fingerprint site. The fixed bytes agree with
+  the fingerprints already in [`firmware.h`](../app/firmware.h) — the accept check
+  and the shared prologue — and the tests assert that.
+
+Two of the nine are not code and still need their referencing instruction read per
+firmware, not a pattern:
+
+- **`CTX_PTR`** is a data pointer in a zeroed region — nothing to pattern on. It is
+  recovered from the RIP-relative load that reads it.
+- **`FMT_STRING`** lives inside a string table; its bytes are not distinctive.
+
+And one layout falls out for free: the cache-fingerprint routine's own
+displacements are `BTA_FW_CACHE_FIRST` and `BTA_FW_CACHE_END`, so that data layout
+is read from the code rather than guessed.
+
+This is the **Safe** rung for 13.52 and good *candidate* patterns for everything
+else. It is **not** validation for another firmware — the masks are still a
+one-firmware hypothesis (see above). The next read-only step is checklist item 6:
+run these signatures against a live kernel and confirm each resolves to exactly one
+address.
+
 ## Per-firmware research checklist
 
 For each firmware we want to add (all read-only until the final step):
@@ -107,9 +141,9 @@ For each firmware we want to add (all read-only until the final step):
 5. **Diff against 13.52** (and any other firmware already done) to confirm which
    masked bytes really are volatile. Tighten any signature that isn't unique.
 6. **Validate on the actual console, read-only**, with the firmware probe: confirm
-   the base recovers, the version reads, and — once the probe understands
-   signatures — that each one resolves to exactly one address. Nothing is patched in
-   this step.
+   the base recovers, the version reads, and — with the matcher now in
+   [`app/sigscan.h`](../app/sigscan.h) — that each one resolves to exactly one
+   address. Nothing is patched in this step.
 7. **Only then enable patching** for that firmware, behind the all-or-nothing
    search. Ship the acceptance patch for it only after its live bytes have been
    confirmed to match the expected before/after.
