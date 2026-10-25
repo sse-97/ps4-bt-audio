@@ -11,7 +11,7 @@ not work. Output only: no microphone or chat input.
 > console you own. Other firmware versions are unsupported: the payload checks kernel
 > instruction fingerprints before patching and refuses to run if they don't match. A
 > read-only [firmware probe](docs/FIRMWARE_PROBE.md) gathers the facts needed to support
-> more firmwares (and PS4 Slim/Pro); it changes nothing on the console.
+> more firmwares (and PS4 Slim/Pro); the [support plan](docs/FIRMWARE_SUPPORT.md) sets out what each one needs, and it changes nothing on the console.
 
 ## What's new in 2.8.0
 
