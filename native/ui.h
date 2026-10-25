@@ -30,7 +30,7 @@ enum { SCREEN_HOME = 0, SCREEN_SCAN = 1, SCREEN_TEST = 2, SCREEN_LATENCY = 3 };
 enum { ROW_ADD = 0, ROW_VOLUME, ROW_TV, ROW_LATENCY, ROW_PHONE, ROW_STOP, ROW_FIXED };
 enum { MENU_TEST = 0, MENU_DISCONNECT, MENU_COUNT };
 enum { TEST_YES = 0, TEST_AGAIN, TEST_DISCONNECT, TEST_COUNT };
-enum { DLG_NONE = 0, DLG_STOP = 1 };
+enum { DLG_NONE = 0, DLG_STOP = 1, DLG_KERNEL = 2 };
 #define HOME_VISIBLE 8   /* list rows that fit above the info line and the bottom rule */
 #define SCAN_VISIBLE 7   /* the scan list starts lower, under its status line */
 
@@ -271,6 +271,26 @@ static const char*fit(int f,const char*s,int maxw,char*buf){
 static void text_fit(int f,int x,int base,const char*s,uint32_t rgb,int maxw){char b[TBUF];text(f,x,base,fit(f,s,maxw,b),rgb);}
 static void text_c(int f,int cx,int base,const char*s,uint32_t rgb,int maxw){char b[TBUF];s=fit(f,s,maxw,b);text(f,cx-text_w(f,s)/2,base,s,rgb);}
 static void text_r(int f,int rx,int base,const char*s,uint32_t rgb){text(f,rx-text_w(f,s),base,s,rgb);}
+/* s broken at spaces into centred lines no wider than maxw, lh px apart, at most
+ * maxl of them (the last is cut with "..."). Returns how many lines it drew. */
+static int text_wrap_c(int f,int cx,int base,const char*s,uint32_t rgb,int maxw,int lh,int maxl){
+ char line[TBUF];int n=0;
+ for(;;){
+  while(*s==' ')s++;
+  if(!*s||n>=maxl)return n;
+  if(n==maxl-1){text_c(f,cx,base+n*lh,s,rgb,maxw);return n+1;}
+  size_t len=0,brk=0;
+  for(size_t i=0;s[i]&&i<TBUF-1;i++){
+   line[i]=s[i];line[i+1]=0;
+   if(text_w(f,line)>maxw)break;
+   len=i+1;if(!s[i+1]||s[i+1]==' ')brk=len;
+  }
+  if(!brk)brk=len?len:1; /* one word wider than the line: cut it where it stops fitting */
+  memcpy(line,s,brk);line[brk]=0;
+  text_c(f,cx,base+n*lh,line,rgb,maxw);
+  s+=brk;n++;
+ }
+}
 /* 8-dot busy indicator (cos,sin * 1024 offsets, starting at 12 o'clock). */
 static const short SPIN8[8][2]={{0,-1024},{724,-724},{1024,0},{724,724},{0,1024},{-724,724},{-1024,0},{-724,-724}};
 static void spinner(int cx,int cy,int r,uint32_t rgb,uint64_t t_ms,int dr){
@@ -294,7 +314,9 @@ static void dev_name(const struct ui_device*d,char*out,size_t cap){
  while(n>0&&(src[n-1]=='?'||src[n-1]==' '))n--;
  int q=0;for(size_t i=n;i<len;i++)if(src[i]=='?')q++;
  if(n<len&&q<2){n=len;while(n>0&&src[n-1]==' ')n--;}
- if(n==0){snprintf(out,cap,"Unnamed Device %04lX",d->address&0xffff);return;}
+ /* No name (the device list came from the radio's scan events, or the name was
+  * unreadable): the address is all there is, so show all of it. */
+ if(n==0){unsigned long long a=d->address;snprintf(out,cap,"Unnamed Device %02X:%02X:%02X:%02X:%02X:%02X",(unsigned)(a>>40)&255,(unsigned)(a>>32)&255,(unsigned)(a>>24)&255,(unsigned)(a>>16)&255,(unsigned)(a>>8)&255,(unsigned)a&255);return;}
  if(n>=cap)n=cap-1;memcpy(out,src,n);out[n]=0;
 }
 /* True when device i is the one the service is linked or linking to. */
@@ -326,6 +348,17 @@ static int home_dev(const struct ui_ctx*c,int k){
  return -1;
 }
 static int home_rows(const struct ui_ctx*c){return home_count(c)+ROW_FIXED;}
+/* True when the service reported what it resolved in the kernel and could not use all
+ * of it: only then does Home offer the Kernel Info dialog in its legend (Triangle
+ * opens it whenever there is something to show). A service that sends no kernel line,
+ * or can do everything, leaves Home exactly as it was.
+ *
+ * Capabilities, not the signature count: once the patch is live its site stops
+ * matching its own pattern, so a restarted service on a fully working console reports
+ * 5 of 6 signatures while still being able to do everything. */
+static int kernel_degraded(void){
+ return state.kernel[0]&&(state.kernel_caps&KCAP_ALL)!=KCAP_ALL;
+}
 /* The Options menu belongs to the connected device's row on Home. */
 static int focus_is_active(const struct ui_ctx*c){
  return c->screen==SCREEN_HOME&&c->focus>=0&&c->focus<home_count(c)&&dev_active(c,home_dev(c,c->focus));
@@ -475,6 +508,28 @@ static void draw_pin(const struct ui_ctx*c){
  }
 }
 
+/* Kernel Info (Triangle on Home): the line the service reports about what it found
+ * in this firmware's kernel, exactly as it logs it (that is what to report), and
+ * under it what that means for the user. */
+static const char*kernel_summary(void){
+ int caps=state.kernel_caps;
+ if(!(caps&KCAP_PATCH))return "Without the Bluetooth patch, some headphones may not connect.";
+ if(!(caps&KCAP_DEVLIST))return "The patch is active. Names are not available on this firmware, so devices show their address.";
+ if(!(caps&KCAP_WIDEN))return "The patch is active. Three-slot widening is not available here and was skipped.";
+ return "Everything the service needs from the kernel was found.";
+}
+static void draw_kernel(void){
+ int y=290;
+ dim_frame(140);dialog_panel(480,y,960,440);
+ text_c(F_ROW,960,y+92,"Kernel Info",WHITE,840);
+ if(!state.kernel[0]){text_c(F_SMALL,960,y+150,"The service has not reported any kernel details.",WHITE,840);}
+ else{
+  int n=text_wrap_c(F_SMALL,960,y+150,state.kernel,WHITE,840,36,2);
+  text_wrap_c(F_SMALL,960,y+150+n*36+18,kernel_summary(),WHITE,840,36,2);
+ }
+ dialog_button(800,y+336,"OK",1);
+}
+
 /* ---- phone control: QR code, address and code on the left while it is on ---- */
 static int phone_panel(const struct ui_ctx*c){return c->online&&state.lan&&state.ip[0]&&state.pair_code[0];}
 static struct qr phone_qr;
@@ -495,20 +550,21 @@ static void draw_phone(void){
 }
 
 /* ---- button legend along the bottom rule ---- */
-enum { HINT_ENTER, HINT_BACK, HINT_TRIANGLE, HINT_OPTIONS };
+enum { HINT_ENTER, HINT_BACK, HINT_TRIANGLE, HINT_OPTIONS, HINT_KERNEL };
 /* The confirm symbol follows the console's enter-button setting (Cross in most
  * regions, Circle in Japan); the cancel symbol is always the other one. */
 static void glyph(int kind,int cx,int cy,int circle_confirms){
  ring(cx,cy,107,-1,0x000000,51);ring(cx,cy,120,107,WHITE,255);
- if(kind==HINT_TRIANGLE)icon_c(I_GT,cx,cy,GLYPH_T,255);
+ if(kind==HINT_TRIANGLE||kind==HINT_KERNEL)icon_c(I_GT,cx,cy,GLYPH_T,255);
  else if((kind==HINT_ENTER)!=(circle_confirms!=0))icon_c(I_GX,cx,cy,GLYPH_X,255);
  else icon_c(I_GO,cx,cy,GLYPH_O,255);
 }
-static void legend(const struct ui_ctx*c,int linew,int back,int search,int options){
- static const char*LABELS[4]={"Enter","Back","Search Again","Options Menu"};
- int kinds[4],n=0,x=106;
+static void legend(const struct ui_ctx*c,int linew,int back,int search,int options,int kernel){
+ static const char*LABELS[5]={"Enter","Back","Search Again","Options Menu","Kernel Info"};
+ int kinds[5],n=0,x=106;
  kinds[n++]=HINT_ENTER;if(back)kinds[n++]=HINT_BACK;
  if(search)kinds[n++]=HINT_TRIANGLE;
+ if(kernel)kinds[n++]=HINT_KERNEL;
  if(options)kinds[n++]=HINT_OPTIONS;
  fill_a(0,943,linew,2,WHITE,128);
  for(int k=0;k<n;k++){
@@ -548,6 +604,7 @@ static void draw(const struct ui_ctx*c){
   if(c->busy&&noticing)spinner(960-text_w(F_SMALL,notice)/2-30,471,11,WHITE,g_now/1000,3);
  }
  else if(c->dialog==DLG_STOP)dialog2("Stop the audio service?","","Stop","Cancel",c->dialog_focus);
+ else if(c->dialog==DLG_KERNEL)draw_kernel();
  else if(noticing)text_c(F_SMALL,960,905,notice,WHITE,1600);
  else if(sc==SCREEN_HOME&&ui_link(c)==LINK_FAILED&&state.message[0])text_c(F_SMALL,960,905,state.message,WHITE,1600);
  if(c->pinmode)draw_pin(c);
@@ -555,5 +612,5 @@ static void draw(const struct ui_ctx*c){
  int show_back=modal||menu||sc!=SCREEN_HOME;
  /* Search Again only when the radio is free: not while searching or connecting. */
  int search=sc==SCREEN_SCAN&&!modal&&!state.scanning&&ui_link(c)!=LINK_CONNECTING;
- legend(c,menu&&!modal?1440:WIDTH,show_back,search,!modal&&(menu||focus_is_active(c)));
+ legend(c,menu&&!modal?1440:WIDTH,show_back,search,!modal&&(menu||focus_is_active(c)),sc==SCREEN_HOME&&!modal&&!menu&&kernel_degraded());
 }

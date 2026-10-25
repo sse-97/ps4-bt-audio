@@ -14,7 +14,7 @@
 #include <orbis/SystemService.h>
 #include "ui.h"
 
-/* Bluetooth Audio 2.8.0 home-screen app. It renders the screens in ui.h and
+/* Bluetooth Audio 3.0.0 home-screen app. It renders the screens in ui.h and
  * drives the audio service entirely through the JSON control API (docs/API.md):
  * GET /api/status for state, POST /api/... for actions. It never talks to the
  * Bluetooth driver itself. */
@@ -95,6 +95,9 @@ static int http(const char*method,const char*path,void*out,size_t cap){
 }
 /* GET /api/status and parse the JSON into `state` (model.h). Sets `online`. */
 static char status_buf[16384];
+/* The service's kernel line goes to app.log whenever it changes (once per start, normally):
+ * what it resolved on this firmware is the first thing to ask about when something fails. */
+static char kernel_logged[UI_KERNEL_LEN];
 static int refresh(void){
  int fd=local_socket(8097);if(fd<0){online=0;return -1;}
  const char*req="GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:8097\r\nX-BTA-Control: 1\r\nConnection: close\r\n\r\n";
@@ -106,7 +109,9 @@ static int refresh(void){
  char*body=strstr(status_buf,"\r\n\r\n");if(!body){online=0;return -1;}body+=4;
  struct ui_state next;
  if(!model_parse(body,&next)){online=0;return -1;}
- state=next;online=1;return 0;
+ state=next;online=1;
+ if(strcmp(kernel_logged,state.kernel)){snprintf(kernel_logged,sizeof(kernel_logged),"%s",state.kernel);if(state.kernel[0])logline(state.kernel);}
+ return 0;
 }
 static void notice_for(const char*s,uint64_t us){snprintf(notice,sizeof(notice),"%s",s);notice_until=g_now+us;}
 static void set_notice(const char*s){notice_for(s,6000000);}
@@ -246,7 +251,7 @@ static int close_app(void){
 
 int main(void){
  sceKernelMkdir("/data/bta_audio",0777);sceKernelChmod("/data/bta_audio",0777);
- rotate_log();logline("Bluetooth Audio 2.8.0 native app starting (times UTC)");
+ rotate_log();logline("Bluetooth Audio 3.0.0 native app starting (times UTC)");
  /* Return codes go to app.log: a mini app (CATEGORY gde) shares the console with a
   * running game, and these are the calls that would show it. */
  char diag[128];
@@ -296,6 +301,7 @@ int main(void){
   /* The Start dialog opens on its Start button each time the service goes away;
    * once the service answers, the dialog's start message has done its job. */
   if(ctx.online&&!online)ctx.dialog_focus=0;
+  if(!online&&ctx.dialog==DLG_KERNEL)ctx.dialog=DLG_NONE;
   if(!ctx.online&&online){notice[0]=0;starting=0;}
   ctx.online=online;
   ctx.busy=starting;
@@ -351,6 +357,8 @@ int main(void){
    if(pressed&ORBIS_PAD_BUTTON_LEFT)ctx.dialog_focus=0;if(pressed&ORBIS_PAD_BUTTON_RIGHT)ctx.dialog_focus=1;
    if(pressed&CONFIRM){ctx.dialog=DLG_NONE;if(!ctx.dialog_focus){logline("action: quit");action("/api/quit");}}
    if(pressed&CANCEL)ctx.dialog=DLG_NONE;
+  }else if(ctx.dialog==DLG_KERNEL){ /* "Kernel Info" OK */
+   if(pressed&(CONFIRM|CANCEL|ORBIS_PAD_BUTTON_TRIANGLE))ctx.dialog=DLG_NONE;
   }else if(ctx.menu){
    step(&ctx.menu_focus,pressed,MENU_COUNT);
    if(pressed&CONFIRM){
@@ -382,6 +390,9 @@ int main(void){
    int row=ctx.focus-home_count(&ctx);
    if(row==ROW_VOLUME){if(pressed&ORBIS_PAD_BUTTON_LEFT)volume_change(-5);if(pressed&ORBIS_PAD_BUTTON_RIGHT)volume_change(5);}
    if(pressed&ORBIS_PAD_BUTTON_OPTIONS&&focus_is_active(&ctx)){ctx.menu=1;ctx.menu_focus=MENU_TEST;}
+   /* Triangle opens Kernel Info whenever the service sent a kernel line; the legend
+    * only mentions it when something was missing (ui.h kernel_degraded). */
+   if(pressed&ORBIS_PAD_BUTTON_TRIANGLE&&state.kernel[0]){logline("action: kernel info");ctx.dialog=DLG_KERNEL;}
    if(pressed&CONFIRM){
     if(row<0){
      /* The connected device opens its Options menu; any other device connects. */

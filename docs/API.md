@@ -1,13 +1,14 @@
-# Control API (v3)
+# Control API (v4)
 
 The audio service runs a small HTTP server on **port 8097**. It serves the web
 control page at `/` and a JSON API under `/api`. The home-screen app and the web
 page both drive the service through this API; nothing else talks to the
 Bluetooth driver.
 
-Every response carries `"api": 3`. The number is the API schema version; it
+Every response carries `"api": 4`. The number is the API schema version; it
 changes when the JSON shape or the endpoint set changes, independently of the
-release version in `VERSION`.
+release version in `VERSION`. Clients require `api >= 3`, so v4 is compatible
+with them.
 
 ## Who can reach it
 
@@ -33,7 +34,7 @@ A LAN client pairs by posting the code and is handed a token:
 ```
 POST /api/pair/<code>
 X-BTA-Control: 1
---> 200 {"api":3,"paired":true,"token":"<32 hex chars>"}
+--> 200 {"api":4,"paired":true,"token":"<32 hex chars>"}
 ```
 
 It then sends that token on every later request:
@@ -53,7 +54,7 @@ X-BTA-Token: <token>
   lock the owner out.
 
 A LAN request without a valid token gets `401` and a JSON body
-`{"api":3,"paired":false,"lan":<0|1>}`, which tells the page whether to prompt
+`{"api":4,"paired":false,"lan":<0|1>}`, which tells the page whether to prompt
 for a code or ask the owner to enable phone control.
 
 ## Endpoints
@@ -70,10 +71,10 @@ client may reach without a token.
 | `POST /api/pair/<code>` | Exchange the TV code for a token. |
 | `POST /api/scan` | Add Device: stop reconnecting, disconnect the device (or cancel its connection attempt), then search once the radio is free. Again while a search runs or waits: nothing; after it: one more search. |
 | `POST /api/scan-done` | Leave Add Device: stop a search and reconnect the device Add Device paused. |
-| `POST /api/select/<MAC>` | Choose a listed audio device and connect (ends Add Device). |
+| `POST /api/select/<MAC>` | Choose a device and connect (ends Add Device). `<MAC>` is twelve hex digits, no separators. Any well-formed address is accepted, including one `devices[]` does not hold and one whose class of device does not advertise audio: it is taken at its word and dialled. Only a malformed address is a `400`. |
 | `POST /api/connect` | Connect the selected device. |
 | `POST /api/stop` | Disconnect and restore TV sound. |
-| `POST /api/test` | Play a short test tone. |
+| `POST /api/test` | Play a short test tone. Needs a streaming device (`409` otherwise); the link state is not re-read. |
 | `POST /api/volume/<0-100>` | Set headphone volume. |
 | `POST /api/pin/<digits>` | Submit a pairing PIN for a headset that asks for one. |
 | `POST /api/tv-on`, `/api/tv-off` | Keep or mute TV sound while streaming. |
@@ -90,7 +91,7 @@ The important fields:
 
 | Field | Meaning |
 |---|---|
-| `api` | API schema version (3). |
+| `api` | API schema version (4). |
 | `version` | Release version string. |
 | `message` | Human-readable status line. |
 | `link` | Truthful link state: 0 idle, 1 connecting, 2 playing, 3 lost, 4 failed, 5 searching. |
@@ -102,12 +103,32 @@ The important fields:
 | `drops`, `underruns` | Packets dropped and buffer underruns while streaming (choppy-audio signals). |
 | `volume`, `meter`, `level` | Headphone volume and output level. |
 | `tv_enabled`, `hdmi_muted` | TV-sound preference and current mute state. |
-| `name`, `selected`, `devices[]` | The chosen device and the listed audio devices. Each device has `address`, `name`, `audio` (1 if it advertises the audio service), `known` (1 if it has played sound through the service before; the home-screen app lists only these on Home), `found` (1 if it answered a search since Add Device was last opened; the app's Add Device lists only these) and `rssi` (its signal strength then, in dBm; 0 when not found). The list itself is every device the console's Bluetooth knows, including ones that are off or in their case. |
+| `name`, `selected`, `devices[]` | The chosen device and the listed devices. |
+| `kernel` | One line describing what the service resolved in this kernel, e.g. `kernel: base ok, 6/6 signatures, fw 0x13520001, patch+devlist+widen`. This is the line to quote in a bug report; see [FIRMWARE.md](FIRMWARE.md). |
+| `fw_version` | Firmware as `sceKernelGetSystemSwVersion` reports it, a number: `324141057` (`0x13520001`) on 13.52. 0 if unknown. |
+| `kernel_caps` | Bitmask of what is available: 1 accept patch, 2 device list, 4 three-slot widening. |
+| `kernel_sigs` | How many of the six code signatures resolved uniquely. |
 | `lan` | 1 if phone control is on. |
 | `ip` | The console's LAN address, e.g. `"192.168.1.97"`, while phone control is on. Absent when it is off or the address isn't known. |
 | `pair_code` | The current six-digit code. **Only present for console-local callers**, never in a LAN response. |
 
-Remaining fields (`drops`, `underruns`, `patch_rc`, `bt_state`, `relinks`,
+Each entry in `devices[]` has `address`, `name`, `audio`, `known`, `found` and
+`rssi`:
+
+- `audio` is 1 when the device advertises audio playback, from its service bits or
+  from its class of device alone. It is a **label, never a filter**: every device the
+  service knows of is listed, because one with an odd class of device is exactly the
+  one a user needs to see in order to try it.
+- `known` is 1 if the device has played sound through the service before; the
+  home-screen app lists only these on Home.
+- `found` is 1 if it answered a search since Add Device was last opened (the app's Add
+  Device lists only these), and `rssi` is its signal strength then, in dBm, or 0 when
+  not found.
+- `name` is empty when the service could not read the driver's device cache — on a
+  firmware without the device-list capability the list comes from scan events, which
+  carry no name. Clients then show the address.
+
+Remaining fields (`patch_rc`, `packet_rc`, `connect_rc`, `bt_state`, `relinks`,
 `resyncs`, timing counters, …) are diagnostics.
 
 ## Searching and connecting share the radio

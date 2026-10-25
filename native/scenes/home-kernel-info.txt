@@ -1,0 +1,17 @@
+# Home: the Kernel Info dialog, as on a firmware where only the patch resolved.
+# The kernel* and fw_version keys need the matching lines in host_ui.c's apply();
+# without them the dialog shows its "no kernel details" text.
+screen=0
+online=1
+link=2
+state=streaming
+volume=60
+latency_mode=1
+selected=5c2b3e112233
+dev=|5c2b3e112233|1|1
+kernel=kernel: base ok, 5/6 signatures (command ambiguous), fw 0x09000001, patch only
+kernel_caps=1
+kernel_sigs=5
+fw_version=150994945
+dialog=2
+t=1200

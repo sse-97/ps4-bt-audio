@@ -1,5 +1,4 @@
 #include "runtime.h"
-#include "firmware.h"
 extern const char __image_start[],__image_end[];
 void*memset(void*p,int value,u64 n){u8*d=p;while(n--)*d++=(u8)value;return p;}
 void*memcpy(void*d,const void*s,u64 n){u8*a=d;const u8*b=s;while(n--)*a++=*b++;return d;}
@@ -8,10 +7,12 @@ void notify(const char*message){
  u8 req[0xc30];memset(req,0,sizeof(req));*(int*)(req+0x10)=-1;
  u64 n=length(message);if(n>1023)n=1023;memcpy(req+0x2d,message,n);send(0,req,sizeof(req),0);
 }
-/* Run from our own mapping: GoldHEN is free to reuse its injection buffer. */
+/* Run from our own mapping: GoldHEN is free to reuse its injection buffer. No
+ * firmware gate here any more - the service installs on any PS4 and any firmware,
+ * and the worker resolves the kernel at runtime and reports what it can do. The
+ * worst case the owner accepts is a kernel it cannot touch: a feature stays dark,
+ * or at most a crash and a reboot. */
 __attribute__((section(".text.launcher"))) int _start(void){
- int(*version)(void*)=0;struct{u64 size;char text[28];u32 version;}v={.size=40};
- if(resolve("sceKernelGetSystemSwVersion",&version)||!version||version(&v)||v.version!=BTA_FW_VERSION){notify("Bluetooth Audio requires PS4 firmware " BTA_FW_LABEL ".");return 1;}
  long listener=bta_listen();
  if(listener<0){notify("Bluetooth Audio is already running, or port 8097 is busy. Open http://127.0.0.1:8097/");return 3;}
  void*(*map)(void*,u64,int,int,int,u64)=0;int(*unmap)(void*,u64)=0;

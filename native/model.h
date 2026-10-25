@@ -20,6 +20,14 @@ enum {
     LINK_LOST = 3, LINK_FAILED = 4, LINK_SEARCHING = 5, LINK_OFFLINE = 6
 };
 
+/* kernel_caps bits: what the service could use of the kernel on this firmware.
+ * PATCH = the acceptance patch (a headset may still connect without it),
+ * DEVLIST = the rich device list (real names; otherwise only addresses),
+ * WIDEN = HCI three-slot widening (skipped when unavailable). */
+enum { KCAP_PATCH = 1, KCAP_DEVLIST = 2, KCAP_WIDEN = 4, KCAP_ALL = 7 };
+#define UI_KERNEL_LEN 160
+#define UI_KERNEL_SIGS 6   /* the code signatures the service searches for */
+
 #define UI_DEVICE_LIMIT 32
 /* found: it answered a search since Add Device opened; rssi: its signal then (dBm). */
 struct ui_device { unsigned long address; int audio, known, found, rssi; char name[96]; };
@@ -29,6 +37,9 @@ struct ui_state {
     int connect_rc, audio_rc;
     int latency_mode;       /* 0 lowest, 1 balanced, 2 most stable (docs/API.md) */
     int drops, underruns;   /* recent paced-send diagnostics */
+    char kernel[UI_KERNEL_LEN]; /* one readable line: what the service resolved in the kernel; empty if not sent */
+    unsigned long fw_version;   /* sceKernelGetSystemSwVersion (0x13520001 on 13.52), 0 if unknown */
+    int kernel_caps, kernel_sigs; /* KCAP_* bits; how many of UI_KERNEL_SIGS signatures matched */
     unsigned long selected;
     char name[96];          /* active/target device name */
     char conn_state[16];    /* granular link phase: idle/connecting/pairing/configuring/... */
@@ -147,6 +158,11 @@ static int model_parse(const char *body, struct ui_state *s) {
     s->latency_mode = (int)j_int(body, "latency_mode", 1);
     s->drops = (int)j_int(body, "drops", 0);
     s->underruns = (int)j_int(body, "underruns", 0);
+    s->kernel_caps = (int)j_int(body, "kernel_caps", 0);
+    s->kernel_sigs = (int)j_int(body, "kernel_sigs", 0);
+    long fw = j_int(body, "fw_version", 0);
+    s->fw_version = fw > 0 ? (unsigned long)fw : 0;
+    j_str(body, "kernel", s->kernel, sizeof(s->kernel));
     s->selected = j_mac(body, "selected");
     j_str(body, "name", s->name, sizeof(s->name));
     j_str(body, "state", s->conn_state, sizeof(s->conn_state));

@@ -1,11 +1,13 @@
 #include "test.h"
 
-/* Host unit tests for the pure service modules (json, strfmt, dsp, conn,
- * profiles, timing). They build and run on an ordinary PC with no PS4 toolchain:
- *   make test      (or: cc -I app -I tests tests/main.c tests/test_*.c -lm ...)
- * The dsp and strfmt suites include reference copies of the pre-refactor
- * worker.c logic and check the extracted helpers against them over randomised
- * inputs, so a behaviour change in the split would fail the build. */
+/* Host unit tests for the parts of the service that need no console: the pure
+ * modules (json, strfmt, dsp, conn, profiles, timing, pacing, auth, qr), the TV
+ * app's status reader (model), and the kernel resolver (kernel). They build and run
+ * on an ordinary PC with no PS4 toolchain:
+ *   make test      (or: cc -I app -I tests tests/main.c tests/test_*.c -o tests)
+ * The dsp suite carries a reference model of the audio loops and checks the
+ * extracted helpers against it over randomised inputs, so a drift in clamping,
+ * volume scaling or ring wraparound fails the build. */
 struct test_counts g_test = {0, 0};
 
 int main(void) {
@@ -19,7 +21,7 @@ int main(void) {
     printf("timing...\n"); test_timing();
     printf("pacing...\n"); test_pacing();
     printf("qr...\n");     test_qr();
-    printf("sigscan...\n"); test_sigscan();
+    printf("kernel...\n"); test_kernel();
     printf("\n%d checks, %d failures\n", g_test.checks, g_test.failures);
     return g_test.failures ? 1 : 0;
 }

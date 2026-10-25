@@ -1,0 +1,12 @@
+# Add Device on a firmware without the rich device list: the service builds the list
+# from the radio's scan events, so each device has an address but no name (strongest first)
+screen=1
+scanning=0
+link=0
+focus=0
+online=1
+dev=|5c2b3e112233|1|0|1|-48
+dev=|a4c1389f0b77|1|0|1|-57
+dev=|0c8de4a15566|1|0|1|-71
+dev=|f0d1a9c3e208|1|0|1|-82
+t=800

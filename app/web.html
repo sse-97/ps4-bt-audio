@@ -191,6 +191,7 @@ footer{color:var(--muted);font-size:13px;line-height:1.7;margin:24px 2px 2px;pad
     <dt>Drops / underruns</dt><dd id="d-drops">—</dd>
     <dt>Late packets (2 min)</dt><dd id="d-late">—</dd>
    </dl>
+   <p class="sub hidden" id="d-kernel" style="margin-top:12px;overflow-wrap:anywhere"></p>
   </details>
  </section>
 
@@ -200,7 +201,7 @@ footer{color:var(--muted);font-size:13px;line-height:1.7;margin:24px 2px 2px;pad
 <footer>
  Runs on your PS4 — you can close this page while playing.<br>
  After restarting the PS4, run your jailbreak; Bluetooth Audio starts through GoldHEN AutoRun.<br>
- Bluetooth Audio 2.8.0 · PS4 13.52
+ Bluetooth Audio 3.0.0
 </footer>
 </main>
 
@@ -263,6 +264,7 @@ function stateText(s,l){
 }
 // One most-relevant hint, each with a single action. null means all clear.
 function hintFor(s,l,choppy){
+ if(l===4&&typeof s.kernel_caps==="number"&&!(s.kernel_caps&1))return{t:"Couldn't connect. The Bluetooth patch isn't active on this firmware, which may be why. If you report this, include the kernel line under Diagnostics.",a:"Retry",act:"connect"};
  if(l===4)return{t:"Couldn't connect. If the device is paired to your phone, turn Bluetooth off there first, then retry.",a:"Retry",act:"connect"};
  if(choppy)return s.latency_mode<2?
   {t:"Audio is breaking up — usually Wi-Fi interference or a busy game. Switch to Most stable, or use wired Ethernet or 5 GHz Wi-Fi.",a:"Use Most stable",act:"latency/2"}:
@@ -315,7 +317,7 @@ function refresh(){
    deviceKey=key;var sel=$("devices");sel.innerHTML="";
    (s.devices||[]).forEach(function(d){
     var o=document.createElement("option");o.value=d.address;
-    o.textContent=(d.name||"Unnamed device")+" · "+d.address;
+    o.textContent=(d.name||"Unnamed device")+" · "+mac(d.address);
     if(d.address===s.selected)o.selected=true;sel.appendChild(o);
    });
    if(!s.devices||!s.devices.length){
@@ -349,10 +351,13 @@ function refresh(){
   $("d-relinks").textContent=fmt(s.relinks);
   $("d-resyncs").textContent=fmt(s.resyncs);
   $("d-drops").textContent=fmt(s.drops||0)+" / "+fmt(s.underruns||0);
+  var k=$("d-kernel");k.textContent=s.kernel||"";k.classList.toggle("hidden",!s.kernel);
   if($("diag").open&&Date.now()-lastTiming>4500)loadTiming();
  });
 }
 function fmt(n){return typeof n==="number"?n.toLocaleString("en-US"):"—";}
+// Some firmware gives no device names, only addresses: show those as AA:BB:CC:DD:EE:FF.
+function mac(a){return /^[0-9a-f]{12}$/i.test(a)?a.match(/../g).join(":").toUpperCase():a;}
 function setToggle(id,on,label){var b=$(id);b.textContent=label;b.setAttribute("aria-pressed",on?"true":"false");}
 
 function loadTiming(){

@@ -1,13 +1,12 @@
 """Install Bluetooth Audio and manage its single GoldHEN AutoRun entry over FTP.
 
-Backs up every replaced remote file locally. Does not launch or reboot the PS4.
+Any remote file it replaces is first copied to install_backups/ on this PC.
+Does not launch or reboot the PS4.
 """
 import argparse
 from datetime import datetime
 import ftplib
-import hashlib
 import io
-import json
 from pathlib import Path
 import re
 
@@ -29,7 +28,8 @@ def retrieve(ftp, path):
 
 
 def edit_autorun(data, enabled):
-    text = (data or b'').decode('utf-8-sig')
+    # surrogateescape: round-trip any non-UTF-8 bytes in the user's own entries untouched.
+    text = (data or b'').decode('utf-8-sig', 'surrogateescape')
     lines = text.splitlines(keepends=True)
     newline = '\r\n' if '\r\n' in text else '\n'
     output, section, found, inserted = [], '', False, False
@@ -57,7 +57,7 @@ def edit_autorun(data, enabled):
         if not found:
             output.append(newline + '[AutoRun]' + newline)
         output.append(entry_line)
-    return ''.join(output).encode('utf-8')
+    return ''.join(output).encode('utf-8', 'surrogateescape')
 
 
 def main():
@@ -68,38 +68,41 @@ def main():
                    help='payload to install as the boot payload, default: build/BTA-Audio.bin from make payload')
     args = p.parse_args()
     backup = ROOT / 'install_backups' / datetime.now().strftime('%Y%m%d-%H%M%S')
-    backup.mkdir(parents=True, exist_ok=False)
-    report = {'host': args.host, 'files': []}
     with ftplib.FTP() as ftp:
         ftp.connect(args.host, 2121, timeout=8)
         ftp.login()
 
         def replace(path, data):
+            # A console that has never run a payload has no /data/payloads or /data/GoldHEN,
+            # and STOR into a missing directory fails with 550. Create the parents instead
+            # of making the user mkdir them over FTP first.
+            parent = path.rsplit('/', 1)[0]
+            try:
+                ftp.mkd(parent)
+            except ftplib.all_errors:
+                pass  # already there, or the server forbids it: STOR reports the real problem
             previous = retrieve(ftp, path)
             if previous == data:
                 print('Already current:', path)
                 return
             if previous is not None:
+                backup.mkdir(parents=True, exist_ok=True)
                 (backup / path.strip('/').replace('/', '__')).write_bytes(previous)
-            # Keep staging out of the loader's .bin list.
+                print('Backed up', path, 'to', backup)
+            # Upload beside the target and check it landed before renaming it into place, so a
+            # dropped connection can't leave a truncated payloads.ini. The .bta-staging suffix
+            # keeps the half-written file out of the loader's .bin list.
             staging = path + '.bta-staging'
             ftp.storbinary('STOR ' + staging, io.BytesIO(data))
             if retrieve(ftp, staging) != data:
-                raise RuntimeError('Upload verification failed: ' + staging)
+                raise RuntimeError('Upload did not land intact: ' + staging)
             ftp.rename(staging, path)
-            if retrieve(ftp, path) != data:
-                raise RuntimeError('Installed file verification failed: ' + path)
-            report['files'].append({'path': path, 'existed': previous is not None,
-                                    'sha256': hashlib.sha256(data).hexdigest()})
-            print('Installed and verified:', path)
+            print('Installed:', path)
 
         if not args.disable_autorun:
             replace(PAYLOAD, Path(args.payload).read_bytes())
-        previous = retrieve(ftp, INI)
-        replace(INI, edit_autorun(previous, not args.disable_autorun))
-    (backup / 'manifest.json').write_text(json.dumps(report, indent=2))
+        replace(INI, edit_autorun(retrieve(ftp, INI), not args.disable_autorun))
     print('AutoRun disabled.' if args.disable_autorun else 'GoldHEN AutoRun entry enabled.')
-    print('Backup:', backup)
 
 
 if __name__ == '__main__':

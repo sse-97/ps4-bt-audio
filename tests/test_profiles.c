@@ -80,13 +80,24 @@ void test_profiles(void) {
     memset(&empty, 0, sizeof(empty));
     CHECK_EQ(bta_profile_pick(&p, &empty), 0);          /* none in range */
 
-    /* A present but non-audio entry is never picked. */
-    struct bt_device mouse = dev(0x1122334455, "AirPods Pro");
-    mouse.services = 0; mouse.cod = 0x002580; /* HID, not audio */
-    struct bt_devices nonaudio;
-    memset(&nonaudio, 0, sizeof(nonaudio));
-    nonaudio.items[0] = mouse; nonaudio.count = 1;
-    CHECK_EQ(bta_profile_pick(&p, &nonaudio), 0);
+    /* Presence is address-only: a remembered device is reconnected even when the
+     * class of device the list carries says it is not audio. It earned its place in
+     * the table by playing sound, and on a firmware without the driver's device
+     * cache the list comes from scan events, which have no service bits at all. */
+    struct bt_device odd = dev(0x1122334455, "AirPods Pro");
+    odd.services = 0; odd.cod = 0x002580; /* reports HID, not audio */
+    struct bt_devices oddlist;
+    memset(&oddlist, 0, sizeof(oddlist));
+    oddlist.items[0] = odd; oddlist.count = 1;
+    CHECK_EQ(bt_is_audio(&odd), 0);                              /* it really does not look like audio */
+    CHECK_EQ(bta_profile_pick(&p, &oddlist), odd.address);       /* ...and is still picked */
+
+    /* An address that was never remembered is still not picked. */
+    struct bt_device stranger = dev(0x99aabbccddee, "Someone else");
+    struct bt_devices unknown;
+    memset(&unknown, 0, sizeof(unknown));
+    unknown.items[0] = stranger; unknown.count = 1;
+    CHECK_EQ(bta_profile_pick(&p, &unknown), 0);
 
     /* bta_profile_device reconstructs a usable target from a profile. */
     struct bt_device t;
