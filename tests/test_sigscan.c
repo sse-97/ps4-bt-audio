@@ -8,6 +8,7 @@
  * that firmware's own bytes can (see docs/FIRMWARE_SUPPORT.md). */
 #include "test.h"
 #include <string.h>
+#include <stdlib.h>
 #include "../app/fw_signatures.h"
 
 /* Lay a signature's own bytes into buf at off. Wildcard slots get filler that the
@@ -86,6 +87,22 @@ void test_sigscan(void) {
         for (unsigned j = 0; j < 8; j++) {
             CHECK_EQ(cmd->sig.bytes[j], (unsigned char)(BTA_FW_PROLOGUE >> (8 * j)));
             CHECK_EQ(cache->sig.bytes[j], (unsigned char)(BTA_FW_PROLOGUE >> (8 * j)));
+        }
+    }
+
+    /* --- probe-style resolve: the six at their real 13.52 offsets in one buffer,
+     *     each found uniquely at its own address (what fw_probe's scan does). --- */
+    {
+        const unsigned long size = 0x5b8000UL;   /* just past fp_cache (+0x5b7570) */
+        unsigned char *k = calloc(size, 1);
+        CHECK(k != 0);
+        if (k) {
+            for (unsigned i = 0; i < BTA_FW_CODE_SIG_COUNT; i++)
+                place(k, bta_fw_code_sigs[i].known_offset, &bta_fw_code_sigs[i].sig);
+            for (unsigned i = 0; i < BTA_FW_CODE_SIG_COUNT; i++)
+                CHECK_EQ(bta_sig_scan(k, size, &bta_fw_code_sigs[i].sig),
+                         (long)bta_fw_code_sigs[i].known_offset);
+            free(k);
         }
     }
 }
