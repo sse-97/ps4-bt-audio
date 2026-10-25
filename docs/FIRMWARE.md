@@ -28,6 +28,13 @@ and try it on any firmware and any model; nothing refuses on a version number.
 
 Everything firmware-specific lives in [`app/kernel.h`](../app/kernel.h).
 
+**Confirmed on hardware (2026-10-25, 3.0.0, launch-model PS4 on 13.520.001.)** A live
+run resolved all six signatures, reported `patch+devlist+widen`, applied the patch
+(`rc 0`), connected a Libratone ONE and played audible sound, with nothing in the
+kernel log. So on 13.52 the search is confirmed, not merely a candidate — it reaches
+the same addresses the fixed offsets used to name. That says nothing about any other
+firmware: only that firmware's own bytes can.
+
 ## Two addresses that are not guessed
 
 The Bluetooth context pointer is a data pointer in a zeroed region, and the format
