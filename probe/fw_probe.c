@@ -122,6 +122,24 @@ static void put_hex(char **p, u64 v, int digits) {
     put_str(p, "0x");
     for (int i = (digits - 1) * 4; i >= 0; i -= 4) *(*p)++ = h[(v >> i) & 0xf];
 }
+/* One self-check line. `name` is passed as a direct string literal by the caller,
+ * so it stays RIP-relative in the flat payload: reading a name pointer out of a
+ * payload global is not relocated and faults, which was the pre-fix bug here. */
+static void sigline(char **p, const char *name, unsigned flag, u64 found, u64 expected, u32 ver, unsigned *ok) {
+    put_str(p, "  "); put_str(p, name); put_str(p, ": ");
+    if (flag == 0) {
+        put_str(p, "+"); put_hex(p, found, 7);
+        if (ver == BTA_FW_VERSION) {
+            if (found == expected) { put_str(p, " == expected"); (*ok)++; }
+            else { put_str(p, " != expected +"); put_hex(p, expected, 7); }
+        } else { (*ok)++; }
+    } else if (flag == 2) {
+        put_str(p, "AMBIGUOUS (more than one match)");
+    } else {
+        put_str(p, "NOT FOUND");
+    }
+    put_str(p, "\n");
+}
 
 __attribute__((section(".text.launcher"))) int _start(void) {
     /* Firmware version (for the report; the capture is gated on it matching). */
@@ -169,23 +187,18 @@ __attribute__((section(".text.launcher"))) int _start(void) {
             put_str(&p, "                    send this file to the developer\n");
         }
         if (cap.scanned) {
+            /* Names are direct string literals (RIP-relative in the flat payload)
+             * and the expected offsets are firmware.h immediates, so the report
+             * reads no pointer out of a payload global. Order mirrors
+             * bta_fw_code_sigs[] / fw_signatures.h. */
             unsigned ok = 0;
             put_str(&p, "signature self-check (read-only):\n");
-            for (unsigned i = 0; i < cap.sig_n; i++) {
-                put_str(&p, "  "); put_str(&p, bta_fw_code_sigs[i].name); put_str(&p, ": ");
-                if (cap.sig_flag[i] == 0) {
-                    put_str(&p, "+"); put_hex(&p, cap.sig_found[i], 7);
-                    if (version == BTA_FW_VERSION) {
-                        if (cap.sig_found[i] == bta_fw_code_sigs[i].known_offset) { put_str(&p, " == expected"); ok++; }
-                        else { put_str(&p, " != expected +"); put_hex(&p, bta_fw_code_sigs[i].known_offset, 7); }
-                    } else { ok++; }
-                } else if (cap.sig_flag[i] == 2) {
-                    put_str(&p, "AMBIGUOUS (more than one match)");
-                } else {
-                    put_str(&p, "NOT FOUND");
-                }
-                put_str(&p, "\n");
-            }
+            sigline(&p, "copyout",    cap.sig_flag[0], cap.sig_found[0], BTA_FW_OFF_COPYOUT,    version, &ok);
+            sigline(&p, "bt_lock",    cap.sig_flag[1], cap.sig_found[1], BTA_FW_OFF_LOCK,       version, &ok);
+            sigline(&p, "bt_unlock",  cap.sig_flag[2], cap.sig_found[2], BTA_FW_OFF_UNLOCK,     version, &ok);
+            sigline(&p, "command",    cap.sig_flag[3], cap.sig_found[3], BTA_FW_OFF_COMMAND,    version, &ok);
+            sigline(&p, "patch_site", cap.sig_flag[4], cap.sig_found[4], BTA_FW_OFF_PATCH_SITE, version, &ok);
+            sigline(&p, "fp_cache",   cap.sig_flag[5], cap.sig_found[5], BTA_FW_OFF_FP_CACHE,   version, &ok);
             put_str(&p, "                    ");
             *p++ = (char)('0' + ok); put_str(&p, " of "); *p++ = (char)('0' + cap.sig_n);
             put_str(&p, (version == BTA_FW_VERSION) ? " resolved to the expected 13.52 address\n"
