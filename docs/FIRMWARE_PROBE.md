@@ -45,7 +45,10 @@ any payload sender). Then copy the results back over FTP (port 2121):
 - **On 13.52:** send `fw_probe.bin`. It carries the real bytes the search
   signatures are built from. The `.txt` also shows the self-check — ideally every
   signature resolving to its expected address (an `AMBIGUOUS` line means that
-  pattern needs tightening).
+  pattern needs tightening). If the audio service has already applied the accept
+  patch, `patch_site` reads `NOT FOUND` (its bytes are the patched form, which the
+  signature deliberately does not match) — run the probe on a fresh boot, before
+  opening the app, to confirm that one.
 - **On another firmware:** send `fw_probe.txt`. It confirms the exact firmware
   version, that base recovery works there, and whether any of the 13.52 signatures
   still resolve — the first hint of how much carries over.
