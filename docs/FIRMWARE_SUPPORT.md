@@ -121,9 +121,10 @@ is read from the code rather than guessed.
 
 This is the **Safe** rung for 13.52 and good *candidate* patterns for everything
 else. It is **not** validation for another firmware — the masks are still a
-one-firmware hypothesis (see above). The next read-only step is checklist item 6:
-run these signatures against a live kernel and confirm each resolves to exactly one
-address.
+one-firmware hypothesis (see above). The read-only [firmware probe](FIRMWARE_PROBE.md)
+now runs these signatures against a live kernel (checklist item 6) and reports where
+each resolves, so the candidates can be confirmed on hardware without patching
+anything.
 
 ## Per-firmware research checklist
 
@@ -141,9 +142,9 @@ For each firmware we want to add (all read-only until the final step):
 5. **Diff against 13.52** (and any other firmware already done) to confirm which
    masked bytes really are volatile. Tighten any signature that isn't unique.
 6. **Validate on the actual console, read-only**, with the firmware probe: confirm
-   the base recovers, the version reads, and — with the matcher now in
-   [`app/sigscan.h`](../app/sigscan.h) — that each one resolves to exactly one
-   address. Nothing is patched in this step.
+   the base recovers, the version reads, and — the probe now runs the signatures
+   from [`app/fw_signatures.h`](../app/fw_signatures.h) — that each resolves to
+   exactly one address. Nothing is patched in this step.
 7. **Only then enable patching** for that firmware, behind the all-or-nothing
    search. Ship the acceptance patch for it only after its live bytes have been
    confirmed to match the expected before/after.
