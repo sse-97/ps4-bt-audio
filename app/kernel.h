@@ -250,5 +250,13 @@ int bta_kernel_init(void);
 unsigned bta_kernel_caps(void);
 const struct bta_kernel *bta_kernel_info(void);
 unsigned bta_kernel_report(char *out, unsigned cap);
+/* Apply the accept patch. 0 = applied, or already applied (either by this run or by
+ * an earlier one in the same jailbreak). Nonzero means it is not in place: no kernel
+ * base (1), the site unresolved (2), the write did not take (5), or the live bytes
+ * matched neither form (22). A nonzero result is not a reason to stop: the caller
+ * logs it and tries the connection anyway. bt_list and bt_prepare, the other two
+ * capability-dependent entry points, are declared in app/protocol.h beside the
+ * structures they fill. */
+int bta_apply_patch(void);
 
 #endif
