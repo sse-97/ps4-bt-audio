@@ -123,10 +123,17 @@ static void bta_profile_device(const struct bta_profile *e, struct bt_device *d)
     for (unsigned k = 0; k < sizeof(d->name) && k < sizeof(e->name); k++) d->name[k] = e->name[k];
     d->name[sizeof(d->name) - 1] = 0;
 }
-/* Among the devices currently in range (`scanned`), the remembered audio device
- * to connect to: the one most recently used, breaking ties on more successes.
+/* Among the devices currently in range (`scanned`), the remembered device to
+ * connect to: the one most recently used, breaking ties on more successes.
  * Returns its address, or 0 when no remembered device is in range. This is how
- * startup "connect to the last one that is turned on" chooses between several. */
+ * startup "connect to the last one that is turned on" chooses between several.
+ *
+ * Presence is address-only on purpose. A device is in this table because it
+ * already played sound through the service, which outranks anything its class
+ * of device claims; and when the driver's device cache is unavailable the list
+ * is built from scan events, where every entry has class of device alone and no
+ * service bits. Filtering on bt_is_audio here would make a headset that works
+ * un-reconnectable on exactly the firmwares this service now has to cope with. */
 static u64 bta_profile_pick(const struct bta_profiles *p, const struct bt_devices *scanned) {
     u64 best = 0;
     const struct bta_profile *chosen = 0;
@@ -134,7 +141,7 @@ static u64 bta_profile_pick(const struct bta_profiles *p, const struct bt_device
         const struct bta_profile *e = &p->items[i];
         int present = 0;
         for (unsigned j = 0; j < scanned->count; j++)
-            if (scanned->items[j].address == e->address && bt_is_audio(&scanned->items[j])) { present = 1; break; }
+            if (scanned->items[j].address == e->address) { present = 1; break; }
         if (!present) continue;
         if (!chosen || e->last_ok_us > chosen->last_ok_us ||
             (e->last_ok_us == chosen->last_ok_us && e->ok_count > chosen->ok_count)) {

@@ -14,9 +14,10 @@
  *   timing.h   per-second send statistics (GET /api/timing)
  *   auth.h     LAN pairing and token checks for phone control
  *
- * The firmware-specific driver helpers (bt_devices.c, bt_accept_patch.c) and
- * the single firmware table (firmware.h) sit behind bt_list / bt_prepare /
- * bta_apply_patch, so no firmware offset appears here. */
+ * The driver helpers sit behind kernel.h, which resolves the kernel routines by
+ * signature at startup and says which it found (bta_kernel_caps). So no firmware
+ * offset appears here, and nothing here refuses to try: a capability the kernel
+ * didn't yield costs a feature, never the attempt. Any firmware, any model. */
 #include "runtime.h"
 #include "web_page.h"
 #include "protocol.h"
@@ -28,7 +29,7 @@
 #include "profiles.h"
 #include "timing.h"
 #include "pacing.h"
-int bta_apply_patch(void);
+#include "kernel.h"
 
 /* FreeBSD syscall numbers used directly through sc3/sc5. */
 #define SYS_read    3
@@ -83,12 +84,17 @@ struct app {
     u8 *ring;
     u32 readpos;
     int wanted, streaming, tv, muted, quit;
+    int patch_tried;     /* the accept patch is idempotent: applied once per run */
     enum conn_state state;
     long patch_rc, packet_rc, connect_rc, last_rc, hdmi_rc, btstate;
-    u64 next_try, deadline, scan_at, heartbeat, poll_at, net_at, packets, errors, resyncs;
+    u64 next_try, deadline, heartbeat, poll_at, net_at, packets, errors, resyncs;
     unsigned level;
     int volume;
     char message[128];
+    /* bta_kernel_report's line, logged at startup and served in the status. 160 to fit
+     * the worst case (several routines named) without clipping: it is what a user on an
+     * untested firmware quotes in a bug report. The log carries it in full. */
+    char kernel[160];
     /* Per-second send timing (see timing.h). */
     struct bta_second secs[128], cur;
     u32 sec_seq;
@@ -118,7 +124,7 @@ struct app {
      * connection was announced. */
     int dropped, give_up, announced, session, meter;
     u32 attempts;        /* consecutive failed attempts (drives the backoff) */
-    u64 ok_at, meter_at, notify_at[3];
+    u64 ok_at, meter_at, notify_at;
     unsigned meter_peak;
     struct bt_device target;
     u64 own_link;        /* address of the link this run dialled; 0 once dropped (see conn_plan_link) */
@@ -161,7 +167,6 @@ struct app {
      * loopback address and always has full access; LAN clients must pair. */
     struct bta_auth auth;
     int (*getrandom)(void *, u64);
-    u64 entropy; /* stirred by network timing; seeds the RNG fallback */
     /* A lan-on/off request sets these under the lock; network_tick runs the
      * resulting file write and TV notice after releasing it, so the real-time
      * sender is never blocked on flash I/O while toggling phone control. */
@@ -177,29 +182,17 @@ struct app {
     u32 log_len;
     u64 log_t0, log_size;
     u64 stats_at, stream_packets, stream_resyncs; /* audio summary every 10 min (log_stats) */
-    char http_seen[4][96]; /* recent request lines, so a retrying page logs each once per 10 min */
-    u64 http_at[4];
+    u64 http_at;         /* failed-request log lines bounded since then (log_request) */
+    u32 http_lines;
     u64 status_at;       /* next status.json write (every 10 s) */
 };
 
-/* Fold an observation into the entropy pool. Cheap, called on network events so
- * the fallback RNG below depends on real, attacker-unobservable runtime timing. */
-static void stir_entropy(struct app *a, u64 x) {
-    a->entropy = (a->entropy ^ x) * 0x100000001b3UL; /* FNV-style mix */
-    a->entropy ^= a->entropy >> 29;
-}
-/* Fill buf with n random bytes. Uses the kernel RNG when available; otherwise an
- * xorshift seeded from the entropy pool and fresh clock reads. The fallback is a
- * defence in depth — sceKernelGetRandomNumber is expected to resolve on 13.52. */
+/* Fill buf with n random bytes: the kernel RNG, or — should it not resolve — a
+ * mix of clock reads, which is all the console offers without it. */
 static void fill_random(struct app *a, u8 *buf, unsigned n) {
     if (a->getrandom && n <= 64 && a->getrandom(buf, n) == 0) return;
-    u64 x = a->entropy ^ a->clock() ^ ((u64)(unsigned long)buf) ^ 0x9e3779b97f4a7c15UL;
-    for (unsigned i = 0; i < n; i++) {
-        x += a->clock();
-        x ^= x << 13; x ^= x >> 7; x ^= x << 17;
-        buf[i] = (u8)(x >> 24);
-    }
-    a->entropy ^= x;
+    u64 x = a->clock() ^ (u64)(unsigned long)buf;
+    for (unsigned i = 0; i < n; i++) { x = (x ^ a->clock()) * 0x100000001b3UL; buf[i] = (u8)(x >> 32); }
 }
 /* Reconcile the in-memory auth with the LAN_ON flag `on`. Memory only: on a
  * transition it reports what the caller must persist, so the file write (and the
@@ -368,23 +361,38 @@ static void say(struct app *a, const char *pre, const char *suf) {
     message(a, b);
 }
 /* On-screen notices only on real transitions; a flapping link must not spam them. */
-static int may_announce(struct app *a, int kind) {
+static int may_announce(struct app *a) {
     u64 now = a->clock();
-    if (a->notify_at[kind] && now - a->notify_at[kind] < 10000000) return 0;
-    a->notify_at[kind] = now;
+    if (a->notify_at && now - a->notify_at < 10000000) return 0;
+    a->notify_at = now;
     return 1;
 }
+/* Called from the sender thread, so it does no file I/O. */
 static void mute(struct app *a, int on) {
     if (a->hdmi < 0 || a->muted == on) return;
     int v = on;
     a->hdmi_rc = sc3(SYS_ioctl, a->hdmi, HDMI_SET_MUTE, (long)&v);
     if (!a->hdmi_rc) a->muted = on;
-    long result[4] = {a->hdmi, a->hdmi_rc, on, v};
-    put("/data/bt_hdmi_mute_status.bin", result, sizeof(result));
 }
-/* A device answered the search (driver event 1 or 16): remember it, with its
- * latest signal strength. */
-static void note_found(struct app *a, u64 address, int rssi) {
+/* List a device from a search event alone, and hand the entry back. Reading the
+ * driver's cache needs kernel offsets (BTA_KCAP_DEVLIST); the event needs none and
+ * carries the class of device, all bt_is_audio wants. No name, so the UI shows the
+ * MAC — degraded, and far better than an empty list. */
+static struct bt_device *note_device(struct app *a, u64 address, u32 cod) {
+    for (unsigned i = 0; i < a->devices.count; i++) {
+        struct bt_device *e = &a->devices.items[i];
+        if (e->address == address) { if (!e->cod) e->cod = cod; return e; }
+    }
+    if (a->devices.count >= BT_DEVICE_LIMIT) return 0;
+    struct bt_device *d = &a->devices.items[a->devices.count++];
+    memset(d, 0, sizeof(*d));
+    d->address = address; d->cod = cod;
+    return d;
+}
+/* A device answered the search (driver event 1 or 16): remember it with its latest
+ * signal strength, and list it when nothing else can (note_device). */
+static void note_found(struct app *a, u64 address, int rssi, u32 cod) {
+    if (!(bta_kernel_caps() & BTA_KCAP_DEVLIST)) note_device(a, address, cod);
     for (u32 i = 0; i < a->found_count; i++)
         if (a->found[i].address == address) { a->found[i].rssi = rssi; return; }
     if (a->found_count < BT_DEVICE_LIMIT) {
@@ -494,11 +502,10 @@ static void link_lost(struct app *a) {
     a->own_link = 0; /* should the driver still list it, that link is dead: dial afresh */
     a->state = CONN_RECOVERING; a->next_try = a->clock() + 2000000;
     say(a, "", " disconnected. TV sound is back. Reconnecting...");
-    if (may_announce(a, 1)) {
+    if (may_announce(a)) {
         char m[128];
         compose(m, sizeof(m), "", target_name(a), " disconnected. TV sound is back on. Reconnecting...");
-        notify(m);
-        a->announced = 1;
+        notify(m); a->announced = 1;
     }
 }
 static struct bt_device *device(struct app *a, u64 address) {
@@ -514,7 +521,11 @@ static int ensure_bt(struct app *a) {
     sc3(SYS_write, a->bt, (long)&mask, 8);
     return 0;
 }
+/* The driver's cache has the real names and service bits, so it replaces the list
+ * outright. Without the offsets to read it there is nothing to call: note_device
+ * lists what the search answers, and the target keeps its profile's name. */
 static void refresh_devices(struct app *a) {
+    if (!(bta_kernel_caps() & BTA_KCAP_DEVLIST)) return;
     struct bt_devices d;
     if (!bt_list(&d) && d.count <= BT_DEVICE_LIMIT) a->devices = d;
     struct bt_device *t = device(a, a->target.address);
@@ -652,8 +663,10 @@ static void dial(struct app *a) {
     a->page_before = a->page_last = a->btstate; a->page_seen = 0;
 }
 static void begin_connect(struct app *a) {
-    a->patch_rc = bta_apply_patch();
-    if (a->patch_rc) { fail(a, "Bluetooth setup failed. Check the diagnostic status."); return; }
+    /* Once per run: the patch is idempotent, so every backoff cycle reapplying it
+     * bought nothing. Its failing is no reason to stop either — where the patch site
+     * wasn't found the device may still link up and play, and the user may find out. */
+    if (!a->patch_tried) { a->patch_tried = 1; a->patch_rc = bta_apply_patch(); log_num(a, "patch: accept patch rc ", a->patch_rc); }
     if (ensure_bt(a)) { fail(a, "Bluetooth is not ready. Retrying shortly."); return; }
     refresh_devices(a);
     /* Connect to whichever remembered device is in range: keep the current
@@ -669,17 +682,15 @@ static void begin_connect(struct app *a) {
         say(a, "Looking for ", "... Put it in pairing mode if needed.");
         return;
     }
-    if (!bt_is_audio(t)) {
-        a->wanted = 0; stop_audio(a); a->state = CONN_IDLE;
-        message(a, "This device does not advertise Bluetooth audio playback.");
-        return;
-    }
     end_scan(a);
     a->mode = bta_profile_mode(&a->profiles, a->target.address);
     u64 address = a->target.address;
     a->btstate = sc3(SYS_ioctl, a->bt, BT_LINK_STATE, (long)&address);
     a->state = CONN_CONNECTING; a->deadline = a->clock() + 30000000; a->redial_at = 0;
-    say(a, "Connecting to ", "...");
+    /* An odd class of device is a warning, not a veto: the user picked this one,
+     * and a headset that under-reports its profiles can still play. */
+    if (!bt_is_audio(t)) message(a, "This device does not advertise Bluetooth audio playback. Trying anyway...");
+    else say(a, "Connecting to ", "...");
     log_num(a, "connect: link state ", a->btstate);
     switch (conn_plan_link(a->btstate, a->own_link == address)) {
     case CONN_DIAL: /* right after a search the radio rests first: bluetooth_tick dials then */
@@ -716,15 +727,12 @@ static void start_audio(struct app *a) {
     a->confirmed = 0; a->modes_tried = (u8)(1 << a->mode);
     a->ok_at = a->stream_at; a->meter = 0; a->meter_peak = 0;
     say(a, "Connected to ", ".");
-    if (was_dropped) {
-        if (told && may_announce(a, 2)) {
-            char m[96];
-            compose(m, sizeof(m), "", target_name(a), " reconnected.");
-            notify(m);
-        }
-    } else if (fresh && may_announce(a, 0)) {
+    /* One TV notice per real transition: a link that dropped after it was announced
+     * is back, or this session's first connection succeeded. */
+    if ((was_dropped ? told : fresh) && may_announce(a)) {
         char m[128];
-        compose(m, sizeof(m), "Connected to ", target_name(a), ".");
+        if (was_dropped) compose(m, sizeof(m), "", target_name(a), " reconnected.");
+        else compose(m, sizeof(m), "Connected to ", target_name(a), ".");
         notify(m);
     }
 }
@@ -853,7 +861,7 @@ static void bluetooth_tick(struct app *a, u64 now) {
                 /* A device answering the search: 1 with its class of device as
                  * data, 16 after it; the subtype is the signal strength (dBm, as a
                  * signed byte). Dozens per search, so recorded, not logged. */
-                if (ev[i].type == 1 || ev[i].type == 16) { note_found(a, ev[i].address, (signed char)ev[i].subtype); continue; }
+                if (ev[i].type == 1 || ev[i].type == 16) { note_found(a, ev[i].address, (signed char)ev[i].subtype, ev[i].data); continue; }
                 log_event(a, &ev[i], now);
                 /* Pairing only happens during connection setup. Ignoring these
                  * while streaming keeps the state == CONN_STREAMING invariant that
@@ -902,12 +910,10 @@ static void bluetooth_tick(struct app *a, u64 now) {
             a->page_at = 0;
             log_text(a, "connect: link up");
             a->pin_pending = 0;
-            if (exists(NO_WIDEN)) {
-                a->packet_rc = 0; /* diagnostic: leave controller link params untouched */
-            } else {
-                a->packet_rc = bt_prepare(address);
-                if (a->packet_rc) { fail(a, "No supported Bluetooth audio link. Retrying shortly."); return; }
-            }
+            /* Widening only asks the controller for roomier packet types; the link
+             * carries audio without it, so a failure is logged, never fatal. */
+            if (!(bta_kernel_caps() & BTA_KCAP_WIDEN)) a->packet_rc = 0;
+            else if ((a->packet_rc = bt_prepare(address)) != 0) log_num(a, "connect: 3-slot widening rc ", a->packet_rc);
             a->state = CONN_CONFIGURING; a->deadline = now + 400000;
         } else if (a->state == CONN_CONNECTING && a->page_at && conn_dial_ended(a->btstate, a->page_before, a->page_seen)) {
             /* The driver gave up on it (after about 15 s): try again now rather
@@ -1039,7 +1045,7 @@ static int quiet_for_ms(struct app *a, u64 now) {
 static unsigned status(struct app *a, char *out, unsigned cap, int reveal) {
     u64 now = a->clock();
     struct writer w = {out, 0, cap};
-    append(&w, "{\"version\":\"2.8.0\",\"api\":");
+    append(&w, "{\"version\":\"3.0.0\",\"api\":");
     number(&w, BTA_API_VERSION);
     append(&w, ",\"message\":");
     quoted(&w, a->message);
@@ -1082,7 +1088,15 @@ static unsigned status(struct app *a, char *out, unsigned cap, int reveal) {
     field(&w, "audio_rc", a->last_rc);
     field(&w, "hdmi_rc", a->hdmi_rc);
     field(&w, "bt_state", a->btstate);
-    field(&w, "no_widen", exists(NO_WIDEN));
+    /* What the kernel yielded here: the line a bug report quotes, and the parts a UI acts on. */
+    const struct bta_kernel *k = bta_kernel_info();
+    unsigned sigs = 0;                                                /* of the six signatures, */
+    for (unsigned i = 0; k && i < BTA_SIG_ROUTINES; i++) if (!k->sig_flag[i]) sigs++;
+    append(&w, ",\"kernel\":");
+    quoted(&w, a->kernel);
+    field(&w, "fw_version", k ? (long)k->fw_version : 0);
+    field(&w, "kernel_caps", (long)bta_kernel_caps());
+    field(&w, "kernel_sigs", sigs);
     field(&w, "uptime_us", a->clock());
     field(&w, "lan", a->auth.enabled);
     if (a->auth.enabled && a->ip) {
@@ -1102,18 +1116,17 @@ static unsigned status(struct app *a, char *out, unsigned cap, int reveal) {
     append(&w, ",\"name\":");
     quoted(&w, a->target.name);
     append(&w, ",\"devices\":[");
-    int first = 1;
+    /* Every device, audio or not: one with an odd class of device is exactly the one
+     * a user must see to try it. "audio" is for labelling, never for hiding. */
     for (unsigned i = 0; i < a->devices.count; i++) {
         struct bt_device *d = &a->devices.items[i];
-        if (!bt_is_audio(d) && d->address != a->target.address) continue;
-        if (!first) append(&w, ",");
-        first = 0;
+        if (i) append(&w, ",");
         mac_text(d->address, mac);
         append(&w, "{\"address\":");
         quoted(&w, mac);
         append(&w, ",\"name\":");
         quoted(&w, d->name);
-        field(&w, "audio", !!(d->services & 8));
+        field(&w, "audio", bt_is_audio(d)); /* services bits, or the class of device alone */
         field(&w, "known", bta_profile_known(&a->profiles, d->address));
         int rssi = 0, found = found_rssi(a, d->address, &rssi);
         field(&w, "found", found); /* always both, so a reader never takes them from the next device */
@@ -1279,10 +1292,13 @@ static void dispatch(struct app *a, struct client *c) {
         end_add(a, "add: Add Device closed", 1);
     } else if (starts(c->input, "POST /api/select/")) {
         u64 mac = parse_mac(c->input + 17);
+        if (!mac) { response(c, "400 Bad Request", "text/plain", "Use a six-byte MAC address.", 27); return; }
         refresh_devices(a);
-        struct bt_device *d = device(a, mac);
-        if (!mac || !d || !bt_is_audio(d)) { response(c, "400 Bad Request", "text/plain", "Select a listed audio device.", 29); return; }
-        struct bt_device chosen = *d;
+        /* Any well-formed address is dialled: an odd class of device is no reason to
+         * refuse, and one no list holds is taken at its word (note_device). */
+        struct bt_device *d = note_device(a, mac, 0);
+        struct bt_device chosen = {mac, 0, 0, 0, 0, {0}};
+        if (d) chosen = *d;
         u64 old = a->target.address;
         end_add(a, "add: ended, a device was chosen", 0);
         /* Already dialling this one: that attempt carries on. */
@@ -1316,7 +1332,9 @@ static void dispatch(struct app *a, struct client *c) {
         if (!n || value > 100 || !starts(p + n, " HTTP/1.")) { response(c, "400 Bad Request", "text/plain", "Volume must be 0-100.", 21); return; }
         if (save_volume(a, (int)value)) { response(c, "500 Internal Server Error", "text/plain", "Cannot save volume.", 19); return; }
     } else if (starts(c->input, "POST /api/test HTTP/1.")) {
-        if (!a->streaming || a->bt < 0 || a->btstate < 5 || a->btstate > 6) { response(c, "409 Conflict", "text/plain", "Connect a device first.", 23); return; }
+        /* Streaming is the whole precondition: the tone goes out the send the audio
+         * does. The link state is deliberately not re-read while streaming. */
+        if (!a->streaming || a->bt < 0) { response(c, "409 Conflict", "text/plain", "Connect a device first.", 23); return; }
         a->test_phase = 0; a->test_next = 0; a->test_until = a->clock() + 2000000; a->snap = 1;
         message(a, "Playing test tone.");
     } else if (starts(c->input, "POST /api/connect HTTP/1.")) {
@@ -1339,20 +1357,14 @@ static void dispatch(struct app *a, struct client *c) {
         a->dropped = a->give_up = a->announced = a->session = 0;
         a->attempts = 0;
         message(a, "Audio stopped. TV sound restored.");
-    } else if (starts(c->input, "POST /api/joint-on HTTP/1.")) {
+    } else if (starts(c->input, "POST /api/joint-on HTTP/1.") || starts(c->input, "POST /api/joint-off HTTP/1.")) {
+        int joint = starts(c->input, "POST /api/joint-on HTTP/1.");
         if (!a->target.address) { response(c, "409 Conflict", "text/plain", "Select a device first.", 22); return; }
         bta_profile_touch(&a->profiles, &a->target);
-        bta_profile_set_mode(&a->profiles, a->target.address, SBC_JOINT);
+        bta_profile_set_mode(&a->profiles, a->target.address, joint ? SBC_JOINT : SBC_DUAL);
         if (save_profiles(a)) { response(c, "500 Internal Server Error", "text/plain", "Cannot save preference.", 23); return; }
-        a->mode = SBC_JOINT;
-        message(a, "Joint stereo is on for this device.");
-    } else if (starts(c->input, "POST /api/joint-off HTTP/1.")) {
-        if (!a->target.address) { response(c, "409 Conflict", "text/plain", "Select a device first.", 22); return; }
-        bta_profile_touch(&a->profiles, &a->target);
-        bta_profile_set_mode(&a->profiles, a->target.address, SBC_DUAL);
-        if (save_profiles(a)) { response(c, "500 Internal Server Error", "text/plain", "Cannot save preference.", 23); return; }
-        a->mode = SBC_DUAL;
-        message(a, "Joint stereo is off for this device.");
+        a->mode = joint ? SBC_JOINT : SBC_DUAL;
+        message(a, joint ? "Joint stereo is on for this device." : "Joint stereo is off for this device.");
     } else if (starts(c->input, "POST /api/latency/")) {
         const char *p = c->input + 18;
         if (p[0] < '0' || p[0] > '2' || !starts(p + 1, " HTTP/1.")) { response(c, "400 Bad Request", "text/plain", "Latency mode must be 0-2.", 25); return; }
@@ -1380,11 +1392,15 @@ static void dispatch(struct app *a, struct client *c) {
 /* Log one line per notable request, never the routine polls (the app asks for the
  * status twice a second): failures, pairings, and https:// attempts the plain-HTTP
  * server can't answer. A path that carries a secret (the pairing code, a PIN) is
- * cut before it. Each of the last four distinct lines is logged at most once per
- * 10 minutes (a forgotten phone tab polling the status, a button pressed again and
- * again), so retries can't fill the log. Called with the lock held. */
+ * cut before it. Called with the lock held. */
 static void log_request(struct app *a, struct client *c, const char *what) {
     char line[96], req[48];
+    /* A phone tab left on the pairing screen polls twice a second and every reply
+     * is a logged 401, which would churn the whole log in minutes. Same bound as
+     * log_event: a burst is visible, a stuck client cannot push everything else out. */
+    u64 now = a->clock();
+    if (now >= a->http_at + 10000000) { a->http_at = now; a->http_lines = 0; }
+    if (a->http_lines++ >= 12) return;
     struct writer w = {line, 0, sizeof(line)};
     append(&w, "http: ");
     if (what) append(&w, what);
@@ -1406,18 +1422,6 @@ static void log_request(struct app *a, struct client *c, const char *what) {
         else { append(&w, status); append(&w, " "); append(&w, req); }
     }
     append(&w, c->loopback ? " (console)" : " (network)");
-    u64 now = a->clock();
-    int slot = 0;
-    for (int i = 0; i < 4; i++) {
-        if (equal(line, a->http_seen[i])) {
-            if (now - a->http_at[i] < 600000000) return;
-            slot = i;
-            break;
-        }
-        if (a->http_at[i] < a->http_at[slot]) slot = i; /* else reuse the oldest */
-    }
-    memcpy(a->http_seen[slot], line, w.used + 1);
-    a->http_at[slot] = now;
     log_text(a, line);
 }
 /* Rest mode aborts every socket. The aborted listener still completes a connection
@@ -1455,7 +1459,6 @@ static void network_tick(struct app *a, u64 now) {
             sc5(SYS_setsockopt, fd, 0xffff, 0x800, (long)&one, 4);
             c->fd = fd; c->used = c->sent = c->head = c->total = 0; c->tail = 0; c->input[0] = 0; c->deadline = now + 3000000;
             c->loopback = (((u8 *)&peer.addr)[0] == 127); /* the console reaches us here */
-            stir_entropy(a, a->clock() ^ ((u64)peer.addr << 16) ^ (u64)fd); /* feed the RNG fallback */
         }
         if (now > c->deadline) { closefd(c->fd); c->fd = -1; continue; }
         if (!c->total) {
@@ -1570,7 +1573,6 @@ void *bta_worker(void *arg) {
     a.listener = (long)arg;
     a.bt = a.hdmi = a.shmfd = -1;
     a.muted = -1;
-    a.wanted = 0;
     for (int i = 0; i < 4; i++) a.clients[i].fd = -1;
     if (resolve("sceKernelUsleep", &a.sleep) || resolve("sceKernelGetProcessTime", &a.clock) || resolve("shm_open", &a.shm) || resolve("mmap", &a.map) || resolve("munmap", &a.unmap) || !a.sleep || !a.clock || !a.shm || !a.map || !a.unmap) {
         closefd(a.listener);
@@ -1583,8 +1585,15 @@ void *bta_worker(void *arg) {
     { char m[64], d[11];
       u64 w = wall_us();
       date_text(w / 1000000, d);
-      compose(m, sizeof(m), "Bluetooth Audio service 2.8.0 started ", w ? d : "(no clock)", ", times UTC");
+      compose(m, sizeof(m), "Bluetooth Audio service 3.0.0 started ", w ? d : "(no clock)", ", times UTC");
       log_text(&a, m); }
+    /* Resolve the kernel routines by signature, once, before anything asks for a
+     * capability. Its report line is what a user on an untested firmware quotes in a
+     * bug report, so it reaches the file at once: should the kernel work later kill
+     * the console, that line must survive it. */
+    bta_kernel_init();
+    bta_kernel_report(a.kernel, sizeof(a.kernel)); log_text(&a, a.kernel);
+    write_log(&a, a.log, a.log_len); a.log_len = 0; /* no sender thread yet: no lock needed */
     sc3(SYS_unlink, (long)BTA_STOP, 0, 0);
     resolve("sceKernelGetRandomNumber", &a.getrandom); /* optional; fill_random falls back */
     load_profiles(&a);
@@ -1609,10 +1618,10 @@ void *bta_worker(void *arg) {
     start_sender(&a);
     while (!a.quit) {
         u64 now = a.clock(), wall = wall_us();
-        /* Rest-mode resume (see conn_slept): the driver handle, the in-RAM firmware
-         * patch and the sockets may be stale. Tear down, drop any half-done connect
-         * (it may have started as the console went to sleep), reopen the listener
-         * and let the normal connect path (which re-applies the patch and reopens
+        /* Rest-mode resume (see conn_slept): the driver handle and the sockets may
+         * be stale (the in-RAM patch is not — rest mode is not a reboot). Tear down,
+         * drop any half-done connect (it may have started as the console went to
+         * sleep), reopen the listener and let the normal connect path (which reopens
          * /dev/bt) reconnect from scratch. The process-clock check alone skips the
          * case where audio is still flowing (a recently accepted packet): then the
          * gap was only this normal-priority worker thread being starved while the

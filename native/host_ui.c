@@ -50,6 +50,10 @@ static void apply(const char *k, const char *v) {
     else if (!strcmp(k, "message")) snprintf(state.message, sizeof(state.message), "%s", v);
     else if (!strcmp(k, "t")) g_now = (uint64_t)atoll(v) * 1000u;
     else if (!strcmp(k, "notice")) snprintf(notice, sizeof(notice), "%s", v);
+    else if (!strcmp(k, "kernel")) snprintf(state.kernel, sizeof(state.kernel), "%s", v);
+    else if (!strcmp(k, "kernel_caps")) state.kernel_caps = atoi(v);
+    else if (!strcmp(k, "kernel_sigs")) state.kernel_sigs = atoi(v);
+    else if (!strcmp(k, "fw_version")) state.fw_version = (unsigned long)strtoull(v, 0, 0);
     else if (!strcmp(k, "dev")) {
         struct ui_device *d = &state.devices[state.count];
         const char *bar = strchr(v, '|');

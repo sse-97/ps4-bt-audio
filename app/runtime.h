@@ -35,7 +35,7 @@ static inline long bta_listen(void){
 /* Control-API schema version. Bumped when the JSON shape or the set of
  * endpoints changes, so a client can tell an old service from a new one
  * independently of the release version. */
-#define BTA_API_VERSION 3
+#define BTA_API_VERSION 4
 #define BTA_STOP "/data/bta_audio/stop"
 #define TV_ON "/data/bt_bta_tv_on"
 /* Phone control: present => LAN clients may pair; absent (default) => the
@@ -44,7 +44,4 @@ static inline long bta_listen(void){
  * the TV), so the owner can read it over FTP if needed. */
 #define LAN_ON "/data/bta_audio/lan_on"
 #define PAIR_CODE "/data/bta_audio/pair_code.txt"
-/* Diagnostic: if present, skip the 3-slot HCI widening on connect so we can
- * test whether a plain audio link keeps the controller alive. */
-#define NO_WIDEN "/data/bta_audio/no_widen"
 #endif

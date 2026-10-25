@@ -8,7 +8,7 @@
 #   make test        build and run the host unit tests (needs only a native cc)
 #
 # The Docker image in docker/ has everything; scripts/docker-build.sh runs this
-# Makefile inside it. Same flags and object order as the old build_app.ps1.
+# Makefile inside it. The payload needs only clang and ld.lld; the PKG also needs the OpenOrbis toolchain.
 
 VERSION      := $(shell cat VERSION)
 # 2.7.5 -> 02.75, the param.sfo APP_VER/VERSION format
@@ -27,7 +27,6 @@ PKGDIR := $(NATIVE)/package
 DIST  := $(BUILD)/dist
 
 PAYLOAD := $(BUILD)/BTA-Audio.bin
-PROBE   := $(BUILD)/BTA-Probe.bin
 PKG     := $(BUILD)/Bluetooth-Audio-$(VERSION).pkg
 
 PAYLOAD_FLAGS := --target=x86_64-pc-freebsd12-elf -O2 -fPIE -ffreestanding -fno-builtin \
@@ -35,10 +34,9 @@ PAYLOAD_FLAGS := --target=x86_64-pc-freebsd12-elf -O2 -fPIE -ffreestanding -fno-
 	-Wall -Wextra -Werror -I $(OBJ)
 APP_HEADERS := $(wildcard app/*.h)
 
-.PHONY: all payload probe pkg dist clean host-ui test
+.PHONY: all payload pkg dist clean host-ui test
 all: payload pkg
 payload: $(PAYLOAD)
-probe: $(PROBE)
 pkg: $(PKG)
 
 $(OBJ) $(NATIVE) $(DIST) $(BUILD):
@@ -50,28 +48,19 @@ $(OBJ)/web_page.h: app/web.html scripts/embed.py | $(OBJ)
 $(OBJ)/launcher.o $(OBJ)/worker.o: $(OBJ)/%.o: app/%.c $(APP_HEADERS) $(OBJ)/web_page.h
 	$(CLANG) $(PAYLOAD_FLAGS) -c $< -o $@
 
-$(OBJ)/bt_devices.o: app/bt_devices.c $(APP_HEADERS) | $(OBJ)
+# bt_devices and bt_patch run ring-0 callbacks (and bt_patch uses rdmsr), so they
+# forbid SSE registers in kernel context.
+$(OBJ)/bt_devices.o $(OBJ)/bt_patch.o: $(OBJ)/%.o: app/%.c $(APP_HEADERS) | $(OBJ)
 	$(CLANG) $(PAYLOAD_FLAGS) -mgeneral-regs-only -c $< -o $@
 
-$(OBJ)/bt_accept_patch.o: probe/bt_accept_patch.c $(APP_HEADERS) | $(OBJ)
-	$(CLANG) $(PAYLOAD_FLAGS) -mgeneral-regs-only -D_start=bta_apply_patch -c $< -o $@
-
 # Link order matters: launcher first, its entry sits at offset 0.
-PAYLOAD_OBJS := $(addprefix $(OBJ)/,launcher.o worker.o bt_accept_patch.o bt_devices.o)
+PAYLOAD_OBJS := $(addprefix $(OBJ)/,launcher.o worker.o bt_patch.o bt_devices.o)
 
 $(OBJ)/BTA-Audio.debug.elf: $(PAYLOAD_OBJS) app/payload.ld
 	$(LLD) -T app/payload.ld $(PAYLOAD_OBJS) -o $@
 
 $(PAYLOAD): $(PAYLOAD_OBJS) app/payload.ld $(OBJ)/BTA-Audio.debug.elf
 	$(LLD) --oformat=binary -T app/payload.ld $(PAYLOAD_OBJS) -o $@
-
-# Read-only firmware probe: its own standalone payload (_start at offset 0). Same
-# flags as the accept patch, which also uses rdmsr and so forbids SSE registers.
-$(OBJ)/fw_probe.o: probe/fw_probe.c $(APP_HEADERS) | $(OBJ)
-	$(CLANG) $(PAYLOAD_FLAGS) -mgeneral-regs-only -c $< -o $@
-
-$(PROBE): $(OBJ)/fw_probe.o app/payload.ld
-	$(LLD) --oformat=binary -T app/payload.ld $(OBJ)/fw_probe.o -o $@
 
 # --- Home-screen app (OpenOrbis) -------------------------------------------------
 
@@ -129,11 +118,10 @@ $(PKG): $(NATIVE)/BluetoothAudio.elf $(NATIVE)/icon0.png $(PAYLOAD) VERSION
 
 # --- Release files ----------------------------------------------------------------
 
-dist: $(PAYLOAD) $(PROBE) $(PKG) | $(DIST)
+dist: $(PAYLOAD) $(PKG) | $(DIST)
 	cp $(PAYLOAD) $(DIST)/BTA-Audio-$(VERSION).bin
-	cp $(PROBE) $(DIST)/BTA-Probe-$(VERSION).bin
 	cp $(PKG) $(DIST)/Bluetooth-Audio-$(VERSION).pkg
-	cd $(DIST) && sha256sum BTA-Audio-$(VERSION).bin BTA-Probe-$(VERSION).bin Bluetooth-Audio-$(VERSION).pkg > SHA256SUMS
+	cd $(DIST) && sha256sum BTA-Audio-$(VERSION).bin Bluetooth-Audio-$(VERSION).pkg > SHA256SUMS
 	cat $(DIST)/SHA256SUMS
 
 clean:
@@ -147,10 +135,11 @@ $(BUILD)/host_ui: native/host_ui.c native/ui.h native/qr.h $(NATIVE)/ui_font.h $
 	$(HOST_CC) -O2 -Wall -Wno-format-truncation -I $(NATIVE) $< -o $@
 
 # --- Host unit tests ------------------------------------------------------------
-# Pure C that runs natively on the PC (no PS4 toolchain, no libm). The dsp and
-# strfmt suites check the extracted modules against copies of the pre-refactor
-# logic over randomised inputs. TEST_CC is a native compiler; in CI this runs on
-# the runner, not inside the FreeBSD-targeted build image.
+# Pure C that runs natively on the PC (no PS4 toolchain, no libm): the service's
+# console-independent modules, the TV app's status reader, and the kernel resolver
+# (tests/test_kernel.c, which checks the signatures and that each capability
+# degrades on its own). TEST_CC is a native compiler; in CI this runs on the
+# runner, not inside the FreeBSD-targeted build image.
 TEST_CC   ?= cc
 TEST_SRC  := $(wildcard tests/*.c)
 TEST_HDRS := $(wildcard tests/*.h)
